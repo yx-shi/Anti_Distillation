@@ -24,7 +24,9 @@ def test():
     tokenizer=AutoTokenizer.from_pretrained(model_name_or_path)
     sample_input="Hello, how are you?"
     inputs=tokenizer(sample_input, return_tensors="pt")
+    # 输出包含input_ids和attention_mask两个键，值都是 tensor，形状是 (1, 序列长度)，其中 input_ids 是 token id 序列，attention_mask 是对应位置的 mask（1 表示真实 token，0 表示 padding）。
     inputs2=tokenizer.encode(sample_input, return_tensors="pt")
+    # 只输出 input_ids，形状同上，但没有 attention_mask。对于单条输入，inputs["input_ids"] 和 inputs2 的值应该是一样的，只是前者是一个字典中的值，后者直接就是 tensor。
     print("inputs:\n", inputs)
     print("inputs2:\n", inputs2)
 
