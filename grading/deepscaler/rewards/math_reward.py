@@ -8,11 +8,11 @@ validate answers when necessary.
 """
 from typing import List, Union
 
-from src.grading.deepscaler.globals import THOUGHT_DELIMITER_START, THOUGHT_DELIMITER_END, OAI_RM_MODEL
-from src.grading.deepscaler.rewards import RewardConfig, RewardFn, RewardInput, RewardOutput, RewardType
-from src.grading.deepscaler.rewards.math_utils.utils import extract_answer, grade_answer_sympy, grade_answer_mathd
-from src.grading.deepscaler.system_prompts import ORM_PROMPT
-from src.grading.deepscaler.utils import call_gemini_llm, call_oai_rm_llm
+from ..globals import THOUGHT_DELIMITER_START, THOUGHT_DELIMITER_END, OAI_RM_MODEL
+from . import RewardConfig, RewardFn, RewardInput, RewardOutput, RewardType
+from .math_utils.utils import extract_answer, grade_answer_sympy, grade_answer_mathd
+from ..system_prompts import ORM_PROMPT
+from ..utils import call_gemini_llm, call_oai_rm_llm
 
 ORM_USER_TEMPLATE = """
 Problem: {problem}

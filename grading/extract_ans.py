@@ -110,9 +110,23 @@ def extract_NL(text):
     return None, None
 
 
+def extract_gsm8k_hash_answer(text):
+    """提取 GSM8K 常见的 `#### final_answer` 格式。
+
+    这里故意取“第一个” `####` 行，而不是最后一个。
+    原因是生成式模型在没有及时停止时，可能会在正确答案后继续重复输出同一格式。
+    对 GSM8K 来说，第一次出现的 `#### ...` 往往才是模型真正的最终答案位置。
+    """
+
+    match = re.search(r"####\s*([^\n\r]+)", text)
+    if match is None:
+        return None, None
+    return match.group(1).strip(), match.start(1)
+
+
 # 抽取函数按“候选来源”组织在一起，方便后续继续扩展。
 # 常见范式：先写多个 extractor，再统一做“谁在文本里出现得更靠后，就选谁”。
-extract_fns = [extract_NL, extract_final_boxed, extract_final_formula]
+extract_fns = [extract_NL, extract_gsm8k_hash_answer, extract_final_boxed, extract_final_formula]
 
 
 def extract_final_ans(text):

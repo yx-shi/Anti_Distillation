@@ -20,7 +20,6 @@ from sft.config import TrainConfig
 from sft.data import (
     SupervisedFineTuningCollator,
     SupervisedFineTuningDataset,
-    build_gsm8k_prompt,
     load_supervised_dataset_splits,
 )
 from sft.distributed import (
@@ -30,10 +29,10 @@ from sft.distributed import (
     reduce_mean,
     setup_distributed,
 )
-
-EVAL_PREVIEW_QUESTION = (
-    "James decides to run 3 sprints 3 times a week. "
-    "He runs 60 meters each sprint. How many total meters does he run a week?"
+from sft.rollout_eval import (
+    EVAL_PREVIEW_QUESTION,
+    evaluate_rollout_accuracy,
+    generate_eval_preview,
 )
 
 
@@ -138,7 +137,14 @@ def build_model(config: TrainConfig, runtime: DistributedContext, pad_token_id: 
 
 
 def build_dataloaders(config: TrainConfig, tokenizer, runtime: DistributedContext):
-    """Create train/eval dataloaders and the matching distributed samplers."""
+    """Create train/eval dataloaders and keep the raw eval dataset for rollout grading.
+
+    一个常见范式是同时保留两种视图：
+    - tokenized dataset / dataloader：给 loss 计算用
+    - raw dataset：给生成式评测用
+
+    因为 rollout grading 需要原始 question 和原始 gold answer，不能只看 token ids。
+    """
 
     train_split, eval_split = load_supervised_dataset_splits(config)
     train_dataset = SupervisedFineTuningDataset(train_split, tokenizer, config.max_length)
@@ -188,56 +194,7 @@ def build_dataloaders(config: TrainConfig, tokenizer, runtime: DistributedContex
         sampler=eval_sampler,
         **loader_kwargs,
     )
-    return train_loader, eval_loader, train_sampler
-
-
-@torch.no_grad()
-def generate_eval_preview(
-    model,
-    tokenizer,
-    runtime: DistributedContext,
-    max_new_tokens: int = 128,
-) -> dict[str, str]:
-    """Generate one fixed GSM8K sample during eval so logs include a concrete model output.
-
-    这里手写 greedy decoding，而不是直接调用 `model.generate(...)`。
-    一个常见范式是：在 FSDP 下让所有 rank 都显式参与每一步 forward，
-    这样更不容易出现“只有 rank 0 在生成、其他 rank 没跟上”的通信问题。
-    """
-
-    prompt = build_gsm8k_prompt(EVAL_PREVIEW_QUESTION)
-    encoded = tokenizer(
-        prompt,
-        return_tensors="pt",
-        add_special_tokens=False,
-    )
-    input_ids = encoded["input_ids"].to(runtime.device)
-    attention_mask = encoded["attention_mask"].to(runtime.device)
-    prompt_length = input_ids.size(1)
-
-    eos_token_id = tokenizer.eos_token_id
-    model_config = getattr(model, "config", None)
-    if eos_token_id is None and model_config is not None:
-        eos_token_id = getattr(model_config, "eos_token_id", None)
-
-    for _ in range(max_new_tokens):
-        outputs = model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-        )
-        next_token = outputs.logits[:, -1, :].argmax(dim=-1, keepdim=True)
-        input_ids = torch.cat([input_ids, next_token], dim=-1)
-        attention_mask = torch.cat([attention_mask, torch.ones_like(next_token)], dim=-1)
-
-        if eos_token_id is not None and bool(torch.all(next_token.eq(eos_token_id)).item()):
-            break
-
-    generated_ids = input_ids[0, prompt_length:]
-    completion = tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
-    return {
-        "question": EVAL_PREVIEW_QUESTION,
-        "completion": completion,
-    }
+    return train_loader, eval_loader, train_sampler, eval_dataset.dataset
 
 
 @torch.no_grad()
@@ -245,10 +202,19 @@ def evaluate(
     model,
     dataloader: DataLoader,
     tokenizer,
+    eval_source_dataset,
     runtime: DistributedContext,
     config: TrainConfig,
 ) -> dict[str, float | str]:
-    """Run a validation pass and optionally attach one fixed-sample generation preview."""
+    """Run validation metrics for both LM loss and task-level rollout grading.
+
+    这里把两类评测放在一起：
+    - `val_loss / ppl` 反映语言模型的 token-level 拟合程度
+    - `rollout_acc` 反映模型真正把题做出来时的正确率
+
+    这也是大模型训练里很常见的评测组织方式：
+    “保留底层 loss 指标，同时补充更贴近任务目标的高层指标”。
+    """
 
     model.eval()
     total_loss = 0.0
@@ -276,8 +242,25 @@ def evaluate(
     ppl = math.exp(avg_loss) if avg_loss < 20 else float("inf")
     metrics: dict[str, float | str] = {"loss": avg_loss, "ppl": ppl}
 
+    if config.rollout_eval:
+        metrics.update(
+            evaluate_rollout_accuracy(
+                model=model,
+                tokenizer=tokenizer,
+                eval_source_dataset=eval_source_dataset,
+                runtime=runtime,
+                max_new_tokens=config.rollout_max_new_tokens,
+                max_samples=config.rollout_eval_max_samples,
+            )
+        )
+
     if config.eval_preview:
-        preview = generate_eval_preview(model, tokenizer, runtime)
+        preview = generate_eval_preview(
+            model=model,
+            tokenizer=tokenizer,
+            runtime=runtime,
+            max_new_tokens=config.rollout_max_new_tokens,
+        )
         metrics["preview_question"] = preview["question"]
         metrics["preview_completion"] = preview["completion"]
 
@@ -299,7 +282,7 @@ def train(config: TrainConfig) -> None:
 
         tokenizer = build_tokenizer(config)
         model = build_model(config, runtime, tokenizer.pad_token_id)
-        train_loader, eval_loader, train_sampler = build_dataloaders(config, tokenizer, runtime)
+        train_loader, eval_loader, train_sampler, eval_source_dataset = build_dataloaders(config, tokenizer, runtime)
 
         optimizer = torch.optim.AdamW(
             model.parameters(),
@@ -326,6 +309,8 @@ def train(config: TrainConfig) -> None:
             f"world_size={runtime.world_size} "
             f"dataset_backend={config.dataset_backend} "
             f"dataset_name={dataset_label} "
+            f"rollout_eval={config.rollout_eval} "
+            f"rollout_eval_max_samples={config.rollout_eval_max_samples} "
             f"train_steps_per_epoch={len(train_loader)}",
         )
 
@@ -407,13 +392,19 @@ def train(config: TrainConfig) -> None:
                     steps_since_log = 0
 
                 if config.eval_every > 0 and global_step % config.eval_every == 0:
-                    metrics = evaluate(model, eval_loader, tokenizer, runtime, config)
-                    log_main(
-                        runtime,
+                    metrics = evaluate(model, eval_loader, tokenizer, eval_source_dataset, runtime, config)
+                    eval_message = (
                         f"[eval] step={global_step} "
                         f"val_loss={metrics['loss']:.4f} "
-                        f"val_ppl={metrics['ppl']:.4f}",
+                        f"val_ppl={metrics['ppl']:.4f}"
                     )
+                    if config.rollout_eval:
+                        eval_message += (
+                            f" rollout_acc={metrics['rollout_acc']:.4f} "
+                            f"rollout_correct={int(metrics['rollout_correct'])} "
+                            f"rollout_total={int(metrics['rollout_total'])}"
+                        )
+                    log_main(runtime, eval_message)
                     if config.eval_preview:
                         preview_completion = str(metrics["preview_completion"]).strip() or "<empty>"
                         log_main(runtime, f"[eval_preview] question={EVAL_PREVIEW_QUESTION}")
@@ -438,14 +429,20 @@ def train(config: TrainConfig) -> None:
             if stop_training:
                 break
 
-        metrics = evaluate(model, eval_loader, tokenizer, runtime, config)
-        log_main(
-            runtime,
+        metrics = evaluate(model, eval_loader, tokenizer, eval_source_dataset, runtime, config)
+        final_message = (
             "training_done "
             f"steps={global_step} "
             f"val_loss={metrics['loss']:.4f} "
-            f"val_ppl={metrics['ppl']:.4f}",
+            f"val_ppl={metrics['ppl']:.4f}"
         )
+        if config.rollout_eval:
+            final_message += (
+                f" rollout_acc={metrics['rollout_acc']:.4f} "
+                f"rollout_correct={int(metrics['rollout_correct'])} "
+                f"rollout_total={int(metrics['rollout_total'])}"
+            )
+        log_main(runtime, final_message)
         if config.eval_preview:
             preview_completion = str(metrics["preview_completion"]).strip() or "<empty>"
             log_main(runtime, f"[eval_preview] question={EVAL_PREVIEW_QUESTION}")

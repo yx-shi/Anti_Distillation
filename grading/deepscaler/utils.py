@@ -18,7 +18,7 @@ from vertexai.generative_models import (
 )
 from sentence_transformers import SentenceTransformer, util
 
-from src.grading.deepscaler.globals import GCP_PROJECT_ID, GCP_LOCATION, GEMINI_MODEL, OAI_RM_MODEL
+from .globals import GCP_PROJECT_ID, GCP_LOCATION, GEMINI_MODEL, OAI_RM_MODEL
 
 
 def call_oai_rm_llm(

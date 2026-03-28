@@ -32,7 +32,15 @@ class TrainConfig:
     seed: int = 42
     max_steps: int = 0
     debug_fsdp: bool = False
-    eval_preview: bool = False
+    # eval preview: 每次验证时额外生成一道固定题，方便肉眼观察模型当前输出风格。
+    eval_preview: bool = True
+    # rollout eval: 直接让模型做题并用 grading 判对错，比 val_loss 更贴近真实任务表现。
+    rollout_eval: bool = True
+    # 默认不在每次 eval 上跑完整个 test split，而是先抽一个固定大小的子集做近似评估。
+    # 这是训练工程里很常见的折中：降低评测开销，提升实验迭代速度。
+    rollout_eval_max_samples: int = 64
+    # rollout 最多生成多少个新 token。这个值太小会截断答案，太大会拖慢评测。
+    rollout_max_new_tokens: int = 256
     ignore_index: int = -100
     train_on_prompt: bool = False
     local_files_only: bool = True
@@ -67,6 +75,23 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--disable-eval-preview",
         action="store_true",
         help="Disable the fixed GSM8K preview generation that otherwise runs during each evaluation.",
+    )
+    parser.add_argument(
+        "--disable-rollout-eval",
+        action="store_true",
+        help="Disable rollout-based grading evaluation during validation.",
+    )
+    parser.add_argument(
+        "--rollout-eval-max-samples",
+        type=int,
+        default=64,
+        help="How many eval samples to score with rollout grading per evaluation. Use 0 to score the full eval split.",
+    )
+    parser.add_argument(
+        "--rollout-max-new-tokens",
+        type=int,
+        default=256,
+        help="Maximum number of new tokens generated for each rollout evaluation sample.",
     )
     parser.add_argument("--train-on-prompt", action="store_true")
     parser.add_argument(
@@ -104,6 +129,9 @@ def parse_args() -> TrainConfig:
         max_steps=args.max_steps,
         debug_fsdp=args.debug_fsdp,
         eval_preview=not args.disable_eval_preview,
+        rollout_eval=not args.disable_rollout_eval,
+        rollout_eval_max_samples=args.rollout_eval_max_samples,
+        rollout_max_new_tokens=args.rollout_max_new_tokens,
         train_on_prompt=args.train_on_prompt,
         local_files_only=not args.allow_remote_model_files,
     )
