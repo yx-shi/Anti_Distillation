@@ -13,12 +13,18 @@ from torch.utils.data import Dataset
 from sft.config import TrainConfig
 
 
+def build_gsm8k_prompt(question: str) -> str:
+    """Build the instruction-style prompt shared by training data and eval preview generation."""
+
+    return f"### Question:\n{question.strip()}\n\n### Answer:\n"
+
+
 def format_gsm8k_sample(example: dict[str, Any]) -> dict[str, str]:
     """Convert a GSM8K record into a prompt/completion pair used by the SFT pipeline."""
 
     question = example["question"].strip()
     answer = example["answer"].strip()
-    prompt = f"### Question:\n{question}\n\n### Answer:\n"
+    prompt = build_gsm8k_prompt(question)
     return {
         "prompt": prompt,
         "completion": answer,

@@ -1,0 +1,4 @@
+*.out
+test.py
+AGENTS.md
+/modelscope

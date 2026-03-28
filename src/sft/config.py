@@ -11,7 +11,7 @@ class TrainConfig:
     model_name_or_path: str = "/data1/public_checkpoints/Qwen3-1.7B"
     dataset_backend: str = "huggingface"
     dataset_name: str = "openai/gsm8k"
-    dataset_namespace: str = ""
+    dataset_namespace: str = ""  # namespace指的是huggingface上数据集的组织方式，通常是"组织/数据集"，如果数据集没有组织则留空
     dataset_config_name: str = "main"
     modelscope_trust_remote_code: bool = True
     train_split: str = "train"
@@ -21,7 +21,10 @@ class TrainConfig:
     eval_batch_size: int = 2
     num_epochs: int = 1
     learning_rate: float = 5e-5
+
+    # weight decay: 训练过程中对模型参数进行L2正则化的强度。
     weight_decay: float = 0.01
+    # warmup ratio: 训练开始时逐渐增加学习率的阶段占总训练步骤的比例。这个阶段有助于模型更稳定地收敛，避免一开始就使用过大的学习率导致训练不稳定。
     warmup_ratio: float = 0.03
     log_every: int = 20
     eval_every: int = 200
@@ -29,6 +32,7 @@ class TrainConfig:
     seed: int = 42
     max_steps: int = 0
     debug_fsdp: bool = False
+    eval_preview: bool = False
     ignore_index: int = -100
     train_on_prompt: bool = False
     local_files_only: bool = True
@@ -59,6 +63,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--max-steps", type=int, default=0)
     parser.add_argument("--debug-fsdp", action="store_true")
+    parser.add_argument(
+        "--disable-eval-preview",
+        action="store_true",
+        help="Disable the fixed GSM8K preview generation that otherwise runs during each evaluation.",
+    )
     parser.add_argument("--train-on-prompt", action="store_true")
     parser.add_argument(
         "--allow-remote-model-files",
@@ -94,6 +103,7 @@ def parse_args() -> TrainConfig:
         seed=args.seed,
         max_steps=args.max_steps,
         debug_fsdp=args.debug_fsdp,
+        eval_preview=not args.disable_eval_preview,
         train_on_prompt=args.train_on_prompt,
         local_files_only=not args.allow_remote_model_files,
     )
