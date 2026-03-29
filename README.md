@@ -15,6 +15,15 @@ The training code is now organized under `src/sft/`:
 The default dataset backend is now Hugging Face with `openai/gsm8k`.
 ModelScope is still supported as an optional backend.
 
+## vLLM Offline Demo
+
+To keep inference experiments decoupled from the SFT training code, the native
+vLLM offline demo now lives under `examples/vllm_offline/`:
+
+- `examples/vllm_offline/run_qwen_offline.py`: minimal offline inference script
+- `examples/vllm_offline/sample_prompts.txt`: line-based prompt batch example
+- `examples/vllm_offline/README.md`: install notes, commands, and workflow explanation
+
 ## How To Run
 
 Single process:
