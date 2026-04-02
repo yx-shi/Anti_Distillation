@@ -1,5 +1,42 @@
 # Anti Distillation
 
+## Recommended Environment
+
+For the long-term "SFT training + vLLM 0.8.5 decoding" workflow, the repo now includes a unified environment manifest:
+
+- `envs/adistill-unified-vllm085.yml`
+
+This manifest intentionally uses the stricter `vLLM 0.8.5` binary stack as the anchor
+(`torch 2.6.0` / `transformers 4.52.4`) and then layers the current HF SFT
+dependencies on top. That is a safer direction than trying to install `vllm==0.8.5`
+into a newer training-only stack such as `torch 2.10.x`.
+
+`envs/adistill-unified-vllm085.yml` is a standard Conda environment manifest:
+
+- `name`: the environment name created by Conda
+- `channels`: which Conda package channels to resolve from
+- `dependencies`: Conda-managed packages
+- `pip`: pip-managed packages installed after the Conda part is ready
+
+Create the environment:
+
+```bash
+conda env create -f envs/adistill-unified-vllm085.yml
+conda activate adistill-unified
+```
+
+Update an existing environment after editing the YAML:
+
+```bash
+conda env update -n adistill-unified -f envs/adistill-unified-vllm085.yml --prune
+```
+
+Here:
+
+- `-f` means "read the environment definition from this file"
+- `-n` means "target this Conda environment name"
+- `--prune` means "remove packages that are no longer listed in the YAML"
+
 ## Current SFT Layout
 
 The training code is now organized under `src/sft/`:

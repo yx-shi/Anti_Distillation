@@ -84,7 +84,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--rollout-eval-max-samples",
         type=int,
-        default=64,
+        default=16,
         help="How many eval samples to score with rollout grading per evaluation. Use 0 to score the full eval split.",
     )
     parser.add_argument(

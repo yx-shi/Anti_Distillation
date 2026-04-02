@@ -1,0 +1,50 @@
+name: adistill-unified
+channels:
+  - conda-forge
+dependencies:
+  # 这里故意让 conda 只负责“Python 解释器 + C/C++ 运行时”：
+  # - vLLM 官方文档明确建议：如果使用 conda，主要用它来创建 Python 环境
+  # - PyTorch / vLLM 这种强二进制耦合包，交给 pip 按 vLLM 的 wheel 关系解析更稳
+  - python=3.10
+  - pip
+  # 你的服务器当前把 pip/requests 的流量经由 `socks5://127.0.0.1:7891` 转发。
+  # `pip` 底层经由 requests 访问网络时，若要识别 SOCKS 代理，需要提前有 PySocks。
+  # 把它放在 conda 依赖里，能确保“pip 依赖安装阶段”开始前，SOCKS 支持已经就绪。
+  - pysocks
+
+  # `datasets -> pyarrow` 在 Linux 上会依赖较新的 libstdc++。
+  # 你的训练代码里已经通过“先 import datasets，再 import torch”来规避动态链接问题，
+  # 这里再补一层更底层的保障：直接在环境里放新版 GNU C++ runtime。
+  - libgcc-ng>=14
+  - libstdcxx-ng>=14
+
+  - pip:
+      # 统一环境的锚点：
+      # 先固定 vLLM 0.8.5，再把训练依赖往它的二进制矩阵上对齐。
+      - vllm==0.8.5
+
+      # 这组版本已经在你现有的 `adistill-vllm085` 里实际出现过，
+      # 同时也和 vLLM 0.8.5 的依赖约束一致，适合作为统一环境基线。
+      - torch==2.6.0
+      - torchaudio==2.6.0
+      - torchvision==0.21.0
+      - transformers==4.52.4
+      - tokenizers==0.21.4
+      - xformers==0.0.29.post2
+
+      # SFT / dataset loading
+      - datasets==4.7.0
+      - pyarrow==23.0.1
+      - accelerate==1.12.0
+
+      # 本仓库当前本地 grading 逻辑会直接 import 这些包
+      - sympy==1.13.1
+      - pylatexenc==2.10
+
+      # 如果后面要启用 ModelScope 数据后端，再取消下面这一行的注释
+      # - modelscope==1.35.3
+
+      # 如果后面要启用 deepscaler 里的云端 judge / retrieval，再按需补这些：
+      # - sentence-transformers
+      # - openai
+      # - google-cloud-aiplatform
