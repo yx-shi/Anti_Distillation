@@ -1,0 +1,6 @@
+# 每一行是一条 prompt。
+# 空行和以 # 开头的注释行会被脚本自动忽略。
+
+Please explain knowledge distillation in two short sentences.
+Finish the sentence: The capital of France is
+用一句话解释为什么 KL divergence 常被用于蒸馏目标。
