@@ -23,6 +23,7 @@ env/
 # Project-local cache / credentials
 AGENTS.md
 /.modelscope/
+docs/vllm-note/
 
 # Local experiment outputs
 *.out

@@ -92,6 +92,7 @@ class SupervisedFineTuningCollator:
             seq_len = len(input_ids)
             pad_len = max_seq_len - seq_len
 
+            # 把输入序列 padding 到当前 batch 的最大长度，同时构建 attention mask 和 labels。
             padded_input_ids = input_ids + [pad_token_id] * pad_len
             attention_mask = [1] * seq_len + [0] * pad_len
             labels = padded_input_ids.copy()
