@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 # `datasets`/`pyarrow` 需要优先于 torch 导入，避免 Conda 环境里的新 libstdc++
@@ -11,25 +13,70 @@ import torch
 from torch.utils.data import Dataset
 
 from sft.config import TrainConfig
+from sft.hf_cache import ensure_writable_hf_datasets_cache
+from sft.prompting import build_prompt_completion_text, normalize_completion_text
 
 
-def build_gsm8k_prompt(question: str) -> str:
-    """Build the instruction-style prompt shared by training data and eval preview generation."""
+def load_jsonl_records(path: str | os.PathLike[str]) -> list[dict[str, Any]]:
+    """读取本地 JSONL 文件。
 
-    return f"### Question:\n{question.strip()}\n\n### Answer:\n"
+    这里不用 `datasets.load_dataset("json", ...)`，而是直接手写一个极简 JSONL 读取器，
+    主要是为了让数据接口更透明：
+    - 每行就是一个 dict
+    - 出错时更容易定位到具体哪一行
+    - 对 smoke 阶段的小中型数据足够稳定
+    """
+
+    records: list[dict[str, Any]] = []
+    input_path = Path(path)
+    with input_path.open("r", encoding="utf-8") as f:
+        for line_idx, raw_line in enumerate(f, start=1):
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Failed to parse JSONL line {line_idx} from {input_path}.") from exc
+            if not isinstance(record, dict):
+                raise ValueError(f"JSONL line {line_idx} from {input_path} is not an object.")
+            records.append(record)
+    return records
 
 
-def format_gsm8k_sample(example: dict[str, Any]) -> dict[str, str]:
-    """Convert a GSM8K record into a prompt/completion pair used by the SFT pipeline."""
+def format_supervised_sample(example: dict[str, Any], tokenizer) -> dict[str, str]:
+    """把原始样本统一变成 prompt/completion/full_text 视图。
 
-    question = example["question"].strip()
-    answer = example["answer"].strip()
-    prompt = build_gsm8k_prompt(question)
-    return {
-        "prompt": prompt,
-        "completion": answer,
-        "full_text": prompt + answer,
-    }
+    这里有两个输入来源：
+    1. 原始 GSM8K：包含 `question` / `answer`
+    2. 本地 distill JSONL：包含 `prompt` / `completion`
+
+    统一视图的好处是：
+    - 训练侧只关心“prompt 部分”和“completion 部分”
+    - 数据来自哪里，不应该污染 collator 和 loss 逻辑
+    """
+
+    if "prompt" in example and "completion" in example:
+        prompt = str(example["prompt"])
+        completion = normalize_completion_text(str(example["completion"]))
+        return {
+            "prompt": prompt,
+            "completion": completion,
+            "full_text": prompt + completion,
+        }
+
+    if "question" in example and "answer" in example:
+        return build_prompt_completion_text(
+            tokenizer=tokenizer,
+            question=str(example["question"]),
+            completion=str(example["answer"]),
+            enable_thinking=False,
+        )
+
+    raise KeyError(
+        "Unsupported supervised sample format. Expected either "
+        "`question`/`answer` or `prompt`/`completion`."
+    )
 
 
 class SupervisedFineTuningDataset(Dataset):
@@ -44,7 +91,7 @@ class SupervisedFineTuningDataset(Dataset):
         return len(self.dataset)
 
     def __getitem__(self, idx: int) -> dict[str, list[int]]:
-        item = format_gsm8k_sample(self.dataset[idx])
+        item = format_supervised_sample(self.dataset[idx], self.tokenizer)
 
         prompt_ids = self.tokenizer(
             item["prompt"],
@@ -129,6 +176,7 @@ def load_huggingface_dataset_splits(config: TrainConfig) -> tuple[Any, Any]:
 
     from datasets import load_dataset
 
+    ensure_writable_hf_datasets_cache()
     raw_dataset = load_dataset(config.dataset_name, config.dataset_config_name)
     return raw_dataset[config.train_split], raw_dataset[config.eval_split]
 
@@ -187,8 +235,8 @@ def load_modelscope_dataset_splits(config: TrainConfig) -> tuple[Any, Any]:
     return load_one_split(config.train_split), load_one_split(config.eval_split)
 
 
-def load_supervised_dataset_splits(config: TrainConfig) -> tuple[Any, Any]:
-    """Dispatch dataset loading to the configured backend."""
+def load_raw_dataset_splits(config: TrainConfig) -> tuple[Any, Any]:
+    """按当前 backend 读取原始 GSM8K 数据。"""
 
     if config.dataset_backend == "modelscope":
         return load_modelscope_dataset_splits(config)
@@ -196,3 +244,28 @@ def load_supervised_dataset_splits(config: TrainConfig) -> tuple[Any, Any]:
         return load_huggingface_dataset_splits(config)
 
     raise ValueError(f"Unsupported dataset backend: {config.dataset_backend}")
+
+
+def load_supervised_dataset_splits(config: TrainConfig) -> tuple[Any, Any]:
+    """根据配置分发训练/验证集读取逻辑。
+
+    目前支持两种模式：
+    - `gsm8k_raw`：训练和验证都直接读原始 GSM8K
+    - `distill_jsonl`：训练读本地 JSONL；验证优先读 `eval_file`，若未提供则退回原始 GSM8K test
+    """
+
+    if config.dataset_format == "gsm8k_raw":
+        return load_raw_dataset_splits(config)
+
+    if config.dataset_format == "distill_jsonl":
+        if not config.train_file:
+            raise ValueError("`train_file` must be provided when `dataset_format=distill_jsonl`.")
+
+        train_records = load_jsonl_records(config.train_file)
+        if config.eval_file:
+            eval_records = load_jsonl_records(config.eval_file)
+        else:
+            _, eval_records = load_raw_dataset_splits(config)
+        return train_records, eval_records
+
+    raise ValueError(f"Unsupported dataset format: {config.dataset_format}")

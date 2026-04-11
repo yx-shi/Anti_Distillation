@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import json
 import math
 import random
 import time
+from dataclasses import asdict
+from pathlib import Path
 
 # `datasets` 会间接导入 `pyarrow`。在一些 Conda + CUDA 环境里，如果先导入 torch，
 # 动态链接器可能先锁定系统自带的旧版 libstdc++，随后 pyarrow 再加载时就会报
@@ -12,6 +15,7 @@ import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+from torch.distributed.fsdp import FullStateDictConfig, StateDictType
 from torch.distributed.fsdp import ShardingStrategy
 from torch.utils.data import DataLoader, DistributedSampler
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, get_linear_schedule_with_warmup
@@ -197,6 +201,73 @@ def build_dataloaders(config: TrainConfig, tokenizer, runtime: DistributedContex
     return train_loader, eval_loader, train_sampler, eval_dataset.dataset
 
 
+def build_dataset_label(config: TrainConfig) -> str:
+    """生成日志里使用的数据源标签。"""
+
+    if config.dataset_format == "distill_jsonl":
+        train_label = config.train_file or "<missing-train-file>"
+        if config.eval_file:
+            eval_label = config.eval_file
+        else:
+            eval_label = f"{config.dataset_name}:{config.eval_split}"
+        return f"distill_jsonl(train={train_label}, eval={eval_label})"
+
+    if config.dataset_namespace:
+        return f"{config.dataset_namespace}/{config.dataset_name}"
+    return config.dataset_name
+
+
+def save_training_outputs(
+    model,
+    tokenizer,
+    config: TrainConfig,
+    runtime: DistributedContext,
+    metrics: dict[str, float | str],
+) -> None:
+    """在训练结束后保存 checkpoint、配置和最终指标。
+
+    预实验后面会有一个独立的 `final_eval.py` 读取训练产物继续做测试集评测，
+    所以训练阶段必须产出一个稳定的、可复用的输出目录。
+    """
+
+    output_root = Path(config.output_dir)
+    checkpoint_dir = output_root / "final_checkpoint"
+
+    output_root.mkdir(parents=True, exist_ok=True)
+
+    if runtime.use_fsdp:
+        # FSDP 下如果直接在每个 rank 上各自 `save_pretrained`，很容易写出不完整权重。
+        # 这里使用 FULL_STATE_DICT + rank0_only 的常见范式：
+        # - 先把完整参数聚合到 rank 0
+        # - 再只由 rank 0 负责真正落盘
+        save_policy = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
+        with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, save_policy):
+            full_state_dict = model.state_dict()
+
+        if not is_main_process(runtime):
+            return
+
+        model_to_save = model.module
+        model_to_save.save_pretrained(
+            checkpoint_dir,
+            state_dict=full_state_dict,
+            safe_serialization=False,
+        )
+    else:
+        if not is_main_process(runtime):
+            return
+        model.save_pretrained(checkpoint_dir, safe_serialization=False)
+
+    tokenizer.save_pretrained(checkpoint_dir)
+
+    config_path = output_root / "train_config.json"
+    metrics_path = output_root / "final_metrics.json"
+    with config_path.open("w", encoding="utf-8") as f:
+        json.dump(asdict(config), f, ensure_ascii=False, indent=2)
+    with metrics_path.open("w", encoding="utf-8") as f:
+        json.dump(metrics, f, ensure_ascii=False, indent=2)
+
+
 @torch.no_grad()
 def evaluate(
     model,
@@ -271,11 +342,7 @@ def train(config: TrainConfig) -> None:
     """Top-level SFT workflow: setup, load, train, evaluate, cleanup."""
 
     runtime = setup_distributed()
-    dataset_label = (
-        f"{config.dataset_namespace}/{config.dataset_name}"
-        if config.dataset_namespace
-        else config.dataset_name
-    )
+    dataset_label = build_dataset_label(config)
 
     try:
         set_random_seed(config.seed + runtime.rank)
@@ -307,10 +374,12 @@ def train(config: TrainConfig) -> None:
             f"device={runtime.device} "
             f"use_fsdp={runtime.use_fsdp} "
             f"world_size={runtime.world_size} "
+            f"dataset_format={config.dataset_format} "
             f"dataset_backend={config.dataset_backend} "
             f"dataset_name={dataset_label} "
             f"rollout_eval={config.rollout_eval} "
             f"rollout_eval_max_samples={config.rollout_eval_max_samples} "
+            f"output_dir={config.output_dir} "
             f"train_steps_per_epoch={len(train_loader)}",
         )
 
@@ -447,5 +516,12 @@ def train(config: TrainConfig) -> None:
             preview_completion = str(metrics["preview_completion"]).strip() or "<empty>"
             log_main(runtime, f"[eval_preview] question={EVAL_PREVIEW_QUESTION}")
             log_main(runtime, f"[eval_preview] completion={preview_completion}")
+        save_training_outputs(
+            model=model,
+            tokenizer=tokenizer,
+            config=config,
+            runtime=runtime,
+            metrics=metrics,
+        )
     finally:
         cleanup_distributed(runtime)

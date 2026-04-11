@@ -9,6 +9,7 @@ class TrainConfig:
     """Project-level configuration for SFT training."""
 
     model_name_or_path: str = "/data1/public_checkpoints/Qwen3-1.7B"
+    dataset_format: str = "gsm8k_raw"
     dataset_backend: str = "huggingface"
     dataset_name: str = "openai/gsm8k"
     dataset_namespace: str = ""  # namespace指的是huggingface上数据集的组织方式，通常是"组织/数据集"，如果数据集没有组织则留空
@@ -16,6 +17,8 @@ class TrainConfig:
     modelscope_trust_remote_code: bool = True
     train_split: str = "train"
     eval_split: str = "test"
+    train_file: str = ""
+    eval_file: str = ""
     max_length: int = 256
     train_batch_size: int = 2
     eval_batch_size: int = 2
@@ -44,6 +47,7 @@ class TrainConfig:
     ignore_index: int = -100
     train_on_prompt: bool = False
     local_files_only: bool = True
+    output_dir: str = "result/sft_output"
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -51,6 +55,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     parser = argparse.ArgumentParser(description="Train a Qwen SFT model on GSM8K with PyTorch + FSDP.")
     parser.add_argument("--model-name-or-path", default="/data1/public_checkpoints/Qwen3-1.7B")
+    parser.add_argument(
+        "--dataset-format",
+        choices=["gsm8k_raw", "distill_jsonl"],
+        default="gsm8k_raw",
+        help=(
+            "训练数据格式。`gsm8k_raw` 表示直接读取原始 GSM8K；"
+            "`distill_jsonl` 表示读取本地 prompt/completion JSONL。"
+        ),
+    )
     parser.add_argument("--dataset-backend", choices=["modelscope", "huggingface"], default="huggingface")
     parser.add_argument("--dataset-name", default="openai/gsm8k")
     parser.add_argument("--dataset-namespace", default="")
@@ -58,6 +71,19 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--disable-modelscope-trust-remote-code", action="store_true")
     parser.add_argument("--train-split", default="train")
     parser.add_argument("--eval-split", default="test")
+    parser.add_argument(
+        "--train-file",
+        default="",
+        help="当 `--dataset-format distill_jsonl` 时，训练集 JSONL 路径。",
+    )
+    parser.add_argument(
+        "--eval-file",
+        default="",
+        help=(
+            "可选的本地验证集 JSONL 路径。若留空，则继续使用 `--eval-split` "
+            "指定的原始 GSM8K 验证集。"
+        ),
+    )
     parser.add_argument("--max-length", type=int, default=256)
     parser.add_argument("--train-batch-size", type=int, default=2)
     parser.add_argument("--eval-batch-size", type=int, default=2)
@@ -99,6 +125,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="If set, model/tokenizer files are allowed to be fetched remotely instead of local-only loading.",
     )
+    parser.add_argument(
+        "--output-dir",
+        default="result/sft_output",
+        help="训练输出目录。训练结束后会在其中保存最终 checkpoint 与配置摘要。",
+    )
     return parser
 
 
@@ -108,6 +139,7 @@ def parse_args() -> TrainConfig:
     args = build_arg_parser().parse_args()
     return TrainConfig(
         model_name_or_path=args.model_name_or_path,
+        dataset_format=args.dataset_format,
         dataset_backend=args.dataset_backend,
         dataset_name=args.dataset_name,
         dataset_namespace=args.dataset_namespace,
@@ -115,6 +147,8 @@ def parse_args() -> TrainConfig:
         modelscope_trust_remote_code=not args.disable_modelscope_trust_remote_code,
         train_split=args.train_split,
         eval_split=args.eval_split,
+        train_file=args.train_file,
+        eval_file=args.eval_file,
         max_length=args.max_length,
         train_batch_size=args.train_batch_size,
         eval_batch_size=args.eval_batch_size,
@@ -134,4 +168,5 @@ def parse_args() -> TrainConfig:
         rollout_max_new_tokens=args.rollout_max_new_tokens,
         train_on_prompt=args.train_on_prompt,
         local_files_only=not args.allow_remote_model_files,
+        output_dir=args.output_dir,
     )

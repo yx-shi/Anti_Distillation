@@ -18,6 +18,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from sft.prompting import build_qwen3_prompt
+from sft.hf_cache import ensure_writable_hf_datasets_cache
+
 
 def build_arg_parser() -> argparse.ArgumentParser:
     """Create the CLI for standalone rollout grading."""
@@ -53,17 +56,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def build_gsm8k_prompt(question: str) -> str:
-    """Match the prompt template used in the current SFT pipeline.
-
-    这里重复写一份模板，而不是 import 训练代码里的 helper，
-    是为了让这个脚本保持“独立评测工具”的属性：
-    它不需要先把训练模块都 import 成功，才能显示 `--help` 或做基础检查。
-    """
-
-    return f"### Question:\n{question.strip()}\n\n### Answer:\n"
-
-
 def load_sample_from_args(args: argparse.Namespace) -> tuple[str, str, str]:
     """Resolve one evaluation sample either from the dataset or from manual CLI arguments."""
 
@@ -79,6 +71,7 @@ def load_sample_from_args(args: argparse.Namespace) -> tuple[str, str, str]:
 
     from datasets import load_dataset
 
+    ensure_writable_hf_datasets_cache()
     dataset = load_dataset(args.dataset_name, args.dataset_config_name, split=args.split)
     sample = dataset[int(args.sample_index)]
     question = sample["question"].strip()
@@ -100,7 +93,6 @@ def generate_model_output(args: argparse.Namespace, question: str) -> str:
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
-    prompt = build_gsm8k_prompt(question)
     tokenizer = AutoTokenizer.from_pretrained(
         args.model_name_or_path,
         local_files_only=not args.allow_remote_model_files,
@@ -108,6 +100,11 @@ def generate_model_output(args: argparse.Namespace, question: str) -> str:
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left"
+    prompt = build_qwen3_prompt(
+        tokenizer=tokenizer,
+        question=question,
+        enable_thinking=False,
+    )
 
     if args.device == "auto":
         device = "cuda" if torch.cuda.is_available() else "cpu"

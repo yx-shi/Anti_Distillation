@@ -10,6 +10,7 @@ import torch
 import torch.distributed as dist
 
 from sft.distributed import DistributedContext
+from sft.prompting import build_qwen3_prompt
 
 # `grading/` 目前是项目根目录下的独立包，而训练入口通常是 `python src/train_sft.py`。
 # 这时 Python 会把 `src/` 放进模块搜索路径，但不会自动把项目根目录也加进去。
@@ -24,15 +25,18 @@ EVAL_PREVIEW_QUESTION = (
 )
 
 
-def build_rollout_prompt(question: str) -> str:
-    """Build the GSM8K-style prompt used during rollout generation.
+def build_rollout_prompt(tokenizer, question: str) -> str:
+    """Build the Qwen3 chat-template prompt used during rollout generation.
 
-    这里不直接 import `sft.data.build_gsm8k_prompt`，是一个有意为之的工程选择。
-    原因是 `sft.data` 顶层会预加载 `datasets/pyarrow`，而 rollout 评测这层本身并不需要数据加载依赖。
-    把 prompt 模板在这里单独保留一份，可以避免“只想跑 grading，却被 pyarrow 导入卡住”。
+    rollout eval 不再维护独立的硬编码模板，而是直接复用共享的 Qwen3 helper。
+    这样训练输入、teacher 输入和 rollout 输入使用的是同一套 prompt 协议。
     """
 
-    return f"### Question:\n{question.strip()}\n\n### Answer:\n"
+    return build_qwen3_prompt(
+        tokenizer=tokenizer,
+        question=question,
+        enable_thinking=False,
+    )
 
 
 def load_grading_functions() -> tuple[Callable[[str], str | None], Callable[[str, str], bool]]:
@@ -111,7 +115,7 @@ def greedy_generate_completion(
     固定迭代 `max_new_tokens` 次，是一种更稳妥的分布式范式。
     """
 
-    prompt = build_rollout_prompt(question)
+    prompt = build_rollout_prompt(tokenizer, question)
     encoded = tokenizer(
         prompt,
         return_tensors="pt",
