@@ -41,6 +41,26 @@ def first_valid_candidate(candidates: list[dict[str, Any]]) -> dict[str, Any]:
     return sort_candidates(valid_candidates)[0]
 
 
+def first_nonempty_candidate(candidates: list[dict[str, Any]]) -> dict[str, Any]:
+    """在所有候选里退化选择“第一个非空回答”。
+
+    128 条真实 smoke 数据里会遇到一种情况：
+    - teacher 给出的回答看起来是合理的完整自然语言
+    - 但没有落成当前 extractor 能识别的 `#### ...` / boxed / formula 形式
+    - 于是它既不是 `is_valid_candidate`，也不是 `is_correct`
+
+    如果这时直接报错，整条 smoke pipeline 会被少数格式问题卡死。
+    因此这里提供一个更保守的兜底：
+    至少保留“第一个非空候选”，让训练链路继续跑，同时通过 fallback_reason
+    明确记录这是一条低置信度样本。
+    """
+
+    nonempty_candidates = [item for item in candidates if not item.get("is_empty", False)]
+    if not nonempty_candidates:
+        raise ValueError("No non-empty candidate is available for this sample.")
+    return sort_candidates(nonempty_candidates)[0]
+
+
 def build_selection_record(
     selected: dict[str, Any],
     *,
@@ -115,8 +135,12 @@ def main() -> None:
         if correct_candidates:
             baseline_selected = correct_candidates[0]
         else:
-            baseline_selected = first_valid_candidate(candidates)
-            baseline_fallback_reason = "no_correct_candidate"
+            try:
+                baseline_selected = first_valid_candidate(candidates)
+                baseline_fallback_reason = "no_correct_candidate"
+            except ValueError:
+                baseline_selected = first_nonempty_candidate(candidates)
+                baseline_fallback_reason = "no_valid_candidate"
 
         baseline_records.append(
             build_selection_record(
@@ -135,8 +159,8 @@ def main() -> None:
         else:
             random_selected = baseline_selected
             adversarial_selected = baseline_selected
-            random_fallback_reason = "no_correct_candidate"
-            adversarial_fallback_reason = "no_correct_candidate"
+            random_fallback_reason = baseline_fallback_reason or "no_correct_candidate"
+            adversarial_fallback_reason = baseline_fallback_reason or "no_correct_candidate"
 
         random_records.append(
             build_selection_record(

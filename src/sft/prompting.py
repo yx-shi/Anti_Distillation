@@ -3,6 +3,11 @@ from __future__ import annotations
 from typing import Any
 
 
+GSM8K_QWEN3_FORMAT_INSTRUCTION = (
+    "Please reason step by step, and put your final answer within \\boxed{}."
+)
+
+
 def build_qwen3_messages(question: str) -> list[dict[str, str]]:
     """把 GSM8K 问题包装成 Qwen3 单轮对话消息。
 
@@ -12,9 +17,22 @@ def build_qwen3_messages(question: str) -> list[dict[str, str]]:
 
     这样做的目的是把变量尽量压到最少，避免 teacher / student / eval
     分别用不同的消息结构，最后很难解释实验差异到底来自哪里。
+
+    这里额外把 Qwen3 模型卡里推荐的数学输出规范直接拼到 user message 中，
+    即 `Please reason step by step, and put your final answer within \boxed{}.`。
+
+    这样做有两个现实收益：
+    1. 让 teacher 更稳定地产出带 `\boxed{}` 的最终答案，减少 grader 的抽取失败。
+    2. 让训练、rollout eval、teacher data generation 用完全同一套 prompt 约定，
+       避免“teacher 用一种格式、student/eval 用另一种格式”的隐性分布偏移。
     """
 
-    return [{"role": "user", "content": question.strip()}]
+    normalized_question = question.strip()
+    user_content = (
+        f"{normalized_question}\n\n"
+        f"{GSM8K_QWEN3_FORMAT_INSTRUCTION}"
+    )
+    return [{"role": "user", "content": user_content}]
 
 
 def render_qwen3_prompt(

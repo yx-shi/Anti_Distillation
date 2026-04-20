@@ -38,7 +38,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--num-candidates", type=int, default=8)
     parser.add_argument("--temperature", type=float, default=0.7)
     parser.add_argument("--top-p", type=float, default=0.8)
-    parser.add_argument("--max-new-tokens", type=int, default=256)
+    parser.add_argument(
+        "--max-new-tokens",
+        type=int,
+        default=512,
+        help=(
+            "Teacher 单条回答最多生成的新 token 数。"
+            "这里把默认值设成 512，而不是 256，原因是 Qwen3 在 GSM8K 上"
+            "经常会输出较完整的步骤化推理 + \\boxed{} 最终答案；"
+            "如果上限太小，容易在写到最终答案前被长度截断，进而显著拉低"
+            "候选有效率。"
+        ),
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output-file", default=DEFAULT_OUTPUT_FILE)
     parser.add_argument("--tensor-parallel-size", type=int, default=1)

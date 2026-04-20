@@ -106,9 +106,10 @@ Teacher 候选生成阶段固定使用：
 - `k=8`
 - `temperature=0.7`
 - `top_p=0.8`
-- `max_new_tokens=256`
+- `max_new_tokens=512`
 - 固定随机种子
 - `enable_thinking=False`
+- prompt 中追加 `Please reason step by step, and put your final answer within \boxed{}.`，以提高数学题最终答案格式的一致性
 
 ### 阶段 B：候选质量过滤
 
