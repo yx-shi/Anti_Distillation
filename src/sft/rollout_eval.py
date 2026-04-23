@@ -19,6 +19,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from pre_exp.common import choose_subset_indices
+
 EVAL_PREVIEW_QUESTION = (
     "James decides to run 3 sprints 3 times a week. "
     "He runs 60 meters each sprint. How many total meters does he run a week?"
@@ -95,6 +97,77 @@ def truncate_to_first_gsm8k_answer(text: str) -> str:
     if match is None:
         return stripped
     return stripped[: match.end()].strip()
+
+
+def build_rollout_eval_samples(
+    tokenizer,
+    eval_source_dataset: Any,
+    max_samples: int,
+    subset_seed: int,
+) -> list[dict[str, Any]]:
+    """把评测集样本转换成统一的 rollout 请求视图。
+
+    这一步把“评测哪些题”“每道题的 gold answer 是什么”“真正送给模型的 prompt 长什么样”
+    统一固化下来。这样无论你后面用 HF 还是 vLLM 生成，评测口径都能保持一致。
+    """
+
+    dataset_size = len(eval_source_dataset)
+    selected_indices = choose_subset_indices(dataset_size, max_samples, subset_seed)
+
+    prepared_samples: list[dict[str, Any]] = []
+    for dataset_idx in selected_indices:
+        sample = eval_source_dataset[int(dataset_idx)]
+        question = sample["question"].strip()
+        prepared_samples.append(
+            {
+                "sample_id": int(dataset_idx),
+                "question": question,
+                "gold_answer": extract_gsm8k_final_answer(sample["answer"]),
+                "prompt_text": build_rollout_prompt(tokenizer, question),
+            }
+        )
+    return prepared_samples
+
+
+def grade_rollout_predictions(
+    samples: list[dict[str, Any]],
+    generated_texts: list[str],
+) -> tuple[dict[str, float], list[dict[str, Any]]]:
+    """用统一的 grading 规则评估一批 rollout 输出。"""
+
+    if len(samples) != len(generated_texts):
+        raise ValueError(
+            "The number of prepared samples does not match the number of generated outputs."
+        )
+
+    extract_final_ans, grade_answer = load_grading_functions()
+    eval_records: list[dict[str, Any]] = []
+    correct = 0
+
+    for sample, generated_text in zip(samples, generated_texts):
+        completion = truncate_to_first_gsm8k_answer(generated_text)
+        predicted_answer = extract_final_ans(completion)
+        is_correct = predicted_answer is not None and grade_answer(predicted_answer, sample["gold_answer"])
+        correct += int(is_correct)
+        eval_records.append(
+            {
+                "sample_id": sample["sample_id"],
+                "question": sample["question"],
+                "gold_answer": sample["gold_answer"],
+                "generated_text": generated_text,
+                "generated_text_truncated": completion,
+                "predicted_answer": predicted_answer,
+                "is_correct": bool(is_correct),
+            }
+        )
+
+    total = len(samples)
+    metrics = {
+        "rollout_acc": correct / total if total > 0 else 0.0,
+        "rollout_correct": float(correct),
+        "rollout_total": float(total),
+    }
+    return metrics, eval_records
 
 
 def greedy_generate_completion(

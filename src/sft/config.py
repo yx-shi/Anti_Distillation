@@ -19,7 +19,7 @@ class TrainConfig:
     eval_split: str = "test"
     train_file: str = ""
     eval_file: str = ""
-    max_length: int = 256
+    max_length: int = 640
     train_batch_size: int = 2
     eval_batch_size: int = 2
     num_epochs: int = 1
@@ -28,22 +28,24 @@ class TrainConfig:
     # weight decay: 训练过程中对模型参数进行L2正则化的强度。
     weight_decay: float = 0.01
     # warmup ratio: 训练开始时逐渐增加学习率的阶段占总训练步骤的比例。这个阶段有助于模型更稳定地收敛，避免一开始就使用过大的学习率导致训练不稳定。
-    warmup_ratio: float = 0.03
+    warmup_ratio: float = 0.1
+    checkpoint_every: int = 50
+    max_checkpoints_to_keep: int = 3
     log_every: int = 20
-    eval_every: int = 200
+    eval_every: int = 25
     num_workers: int = 0
     seed: int = 42
-    max_steps: int = 0
+    max_steps: int = 100
     debug_fsdp: bool = False
     # eval preview: 每次验证时额外生成一道固定题，方便肉眼观察模型当前输出风格。
-    eval_preview: bool = True
+    eval_preview: bool = False
     # rollout eval: 直接让模型做题并用 grading 判对错，比 val_loss 更贴近真实任务表现。
-    rollout_eval: bool = True
+    rollout_eval: bool = False
     # 默认不在每次 eval 上跑完整个 test split，而是先抽一个固定大小的子集做近似评估。
     # 这是训练工程里很常见的折中：降低评测开销，提升实验迭代速度。
     rollout_eval_max_samples: int = 64
     # rollout 最多生成多少个新 token。这个值太小会截断答案，太大会拖慢评测。
-    rollout_max_new_tokens: int = 256
+    rollout_max_new_tokens: int = 512
     ignore_index: int = -100
     train_on_prompt: bool = False
     local_files_only: bool = True
@@ -84,39 +86,66 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "指定的原始 GSM8K 验证集。"
         ),
     )
-    parser.add_argument("--max-length", type=int, default=256)
+    parser.add_argument("--max-length", type=int, default=640)
     parser.add_argument("--train-batch-size", type=int, default=2)
     parser.add_argument("--eval-batch-size", type=int, default=2)
     parser.add_argument("--num-epochs", type=int, default=1)
     parser.add_argument("--learning-rate", type=float, default=5e-5)
     parser.add_argument("--weight-decay", type=float, default=0.01)
-    parser.add_argument("--warmup-ratio", type=float, default=0.03)
+    parser.add_argument("--warmup-ratio", type=float, default=0.1)
+    parser.add_argument(
+        "--checkpoint-every",
+        type=int,
+        default=50,
+        help="每隔多少个 optimizer step 保存一个中间 checkpoint。设为 0 表示不保存中间 checkpoint。",
+    )
+    parser.add_argument(
+        "--max-checkpoints-to-keep",
+        type=int,
+        default=3,
+        help="最多保留多少个中间 checkpoint。设为 0 或负数表示全部保留。",
+    )
     parser.add_argument("--log-every", type=int, default=20)
-    parser.add_argument("--eval-every", type=int, default=200)
+    parser.add_argument("--eval-every", type=int, default=25)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--max-steps", type=int, default=0)
+    parser.add_argument("--max-steps", type=int, default=100)
     parser.add_argument("--debug-fsdp", action="store_true")
     parser.add_argument(
-        "--disable-eval-preview",
+        "--eval-preview",
+        dest="eval_preview",
         action="store_true",
+        help="Enable the fixed GSM8K preview generation during evaluation.",
+    )
+    parser.add_argument(
+        "--disable-eval-preview",
+        dest="eval_preview",
+        action="store_false",
         help="Disable the fixed GSM8K preview generation that otherwise runs during each evaluation.",
     )
     parser.add_argument(
-        "--disable-rollout-eval",
+        "--rollout-eval",
+        dest="rollout_eval",
         action="store_true",
+        help="Enable rollout-based grading evaluation during validation.",
+    )
+    parser.add_argument(
+        "--disable-rollout-eval",
+        dest="rollout_eval",
+        action="store_false",
         help="Disable rollout-based grading evaluation during validation.",
     )
+    parser.set_defaults(eval_preview=False, rollout_eval=False)
     parser.add_argument(
         "--rollout-eval-max-samples",
         type=int,
-        default=16,
+        default=64,
         help="How many eval samples to score with rollout grading per evaluation. Use 0 to score the full eval split.",
     )
     parser.add_argument(
         "--rollout-max-new-tokens",
         type=int,
-        default=256,
+        default=512,
         help="Maximum number of new tokens generated for each rollout evaluation sample.",
     )
     parser.add_argument("--train-on-prompt", action="store_true")
@@ -156,14 +185,16 @@ def parse_args() -> TrainConfig:
         learning_rate=args.learning_rate,
         weight_decay=args.weight_decay,
         warmup_ratio=args.warmup_ratio,
+        checkpoint_every=args.checkpoint_every,
+        max_checkpoints_to_keep=args.max_checkpoints_to_keep,
         log_every=args.log_every,
         eval_every=args.eval_every,
         num_workers=args.num_workers,
         seed=args.seed,
         max_steps=args.max_steps,
         debug_fsdp=args.debug_fsdp,
-        eval_preview=not args.disable_eval_preview,
-        rollout_eval=not args.disable_rollout_eval,
+        eval_preview=args.eval_preview,
+        rollout_eval=args.rollout_eval,
         rollout_eval_max_samples=args.rollout_eval_max_samples,
         rollout_max_new_tokens=args.rollout_max_new_tokens,
         train_on_prompt=args.train_on_prompt,

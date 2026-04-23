@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import random
+import shutil
 import time
 from dataclasses import asdict
 from pathlib import Path
@@ -10,7 +11,6 @@ from pathlib import Path
 # `datasets` 会间接导入 `pyarrow`。在一些 Conda + CUDA 环境里，如果先导入 torch，
 # 动态链接器可能先锁定系统自带的旧版 libstdc++，随后 pyarrow 再加载时就会报
 # `GLIBCXX_x.x.x not found`。因此这里显式把 datasets 放到 torch 前面导入。
-from datasets import load_dataset
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
@@ -32,11 +32,6 @@ from sft.distributed import (
     is_main_process,
     reduce_mean,
     setup_distributed,
-)
-from sft.rollout_eval import (
-    EVAL_PREVIEW_QUESTION,
-    evaluate_rollout_accuracy,
-    generate_eval_preview,
 )
 
 
@@ -141,13 +136,13 @@ def build_model(config: TrainConfig, runtime: DistributedContext, pad_token_id: 
 
 
 def build_dataloaders(config: TrainConfig, tokenizer, runtime: DistributedContext):
-    """Create train/eval dataloaders and keep the raw eval dataset for rollout grading.
+    """Create train/eval dataloaders and keep the raw eval dataset for offline checkpoint evaluation.
 
     一个常见范式是同时保留两种视图：
     - tokenized dataset / dataloader：给 loss 计算用
-    - raw dataset：给生成式评测用
+    - raw dataset：给训练外的 checkpoint rollout 评测用
 
-    因为 rollout grading 需要原始 question 和原始 gold answer，不能只看 token ids。
+    因为离线 rollout grading 需要原始 question 和原始 gold answer，不能只看 token ids。
     """
 
     train_split, eval_split = load_supervised_dataset_splits(config)
@@ -217,23 +212,20 @@ def build_dataset_label(config: TrainConfig) -> str:
     return config.dataset_name
 
 
-def save_training_outputs(
+def save_model_checkpoint(
     model,
     tokenizer,
-    config: TrainConfig,
     runtime: DistributedContext,
-    metrics: dict[str, float | str],
+    checkpoint_dir: Path,
 ) -> None:
-    """在训练结束后保存 checkpoint、配置和最终指标。
+    """把当前模型权重保存到指定目录。
 
-    预实验后面会有一个独立的 `final_eval.py` 读取训练产物继续做测试集评测，
-    所以训练阶段必须产出一个稳定的、可复用的输出目录。
+    这里把“保存模型本体”的逻辑独立出来，是工程里非常常见的重构方式：
+    - final checkpoint 和 periodic checkpoint 共用同一套保存范式
+    - 后续如果要接离线 vLLM 评测，只需要保证中间目录和最终目录都可加载
     """
 
-    output_root = Path(config.output_dir)
-    checkpoint_dir = output_root / "final_checkpoint"
-
-    output_root.mkdir(parents=True, exist_ok=True)
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     if runtime.use_fsdp:
         # FSDP 下如果直接在每个 rank 上各自 `save_pretrained`，很容易写出不完整权重。
@@ -244,21 +236,44 @@ def save_training_outputs(
         with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, save_policy):
             full_state_dict = model.state_dict()
 
-        if not is_main_process(runtime):
-            return
-
-        model_to_save = model.module
-        model_to_save.save_pretrained(
-            checkpoint_dir,
-            state_dict=full_state_dict,
-            safe_serialization=False,
-        )
+        if is_main_process(runtime):
+            model_to_save = model.module
+            model_to_save.save_pretrained(
+                checkpoint_dir,
+                state_dict=full_state_dict,
+                safe_serialization=False,
+            )
+            tokenizer.save_pretrained(checkpoint_dir)
+        dist.barrier()
     else:
         if not is_main_process(runtime):
             return
         model.save_pretrained(checkpoint_dir, safe_serialization=False)
+        tokenizer.save_pretrained(checkpoint_dir)
 
-    tokenizer.save_pretrained(checkpoint_dir)
+
+def save_training_outputs(
+    model,
+    tokenizer,
+    config: TrainConfig,
+    runtime: DistributedContext,
+    metrics: dict[str, float | str],
+) -> None:
+    """在训练结束后保存最终 checkpoint、配置和最终指标。"""
+
+    output_root = Path(config.output_dir)
+    checkpoint_dir = output_root / "final_checkpoint"
+
+    output_root.mkdir(parents=True, exist_ok=True)
+    save_model_checkpoint(
+        model=model,
+        tokenizer=tokenizer,
+        runtime=runtime,
+        checkpoint_dir=checkpoint_dir,
+    )
+
+    if not is_main_process(runtime):
+        return
 
     config_path = output_root / "train_config.json"
     metrics_path = output_root / "final_metrics.json"
@@ -268,23 +283,85 @@ def save_training_outputs(
         json.dump(metrics, f, ensure_ascii=False, indent=2)
 
 
+def checkpoint_dir_for_step(output_dir: str, step: int) -> Path:
+    """把 step 号映射到统一的 checkpoint 目录名。"""
+
+    return Path(output_dir) / f"checkpoint-step-{step:06d}"
+
+
+def save_periodic_checkpoint(
+    model,
+    tokenizer,
+    config: TrainConfig,
+    runtime: DistributedContext,
+    step: int,
+    metrics: dict[str, float | str],
+) -> None:
+    """保存一个周期性 checkpoint，并附带当前验证指标。"""
+
+    checkpoint_dir = checkpoint_dir_for_step(config.output_dir, step)
+    save_model_checkpoint(
+        model=model,
+        tokenizer=tokenizer,
+        runtime=runtime,
+        checkpoint_dir=checkpoint_dir,
+    )
+
+    if not is_main_process(runtime):
+        return
+
+    metrics_path = checkpoint_dir / "metrics.json"
+    metadata_path = checkpoint_dir / "metadata.json"
+    with metrics_path.open("w", encoding="utf-8") as f:
+        json.dump(metrics, f, ensure_ascii=False, indent=2)
+    with metadata_path.open("w", encoding="utf-8") as f:
+        json.dump({"step": step}, f, ensure_ascii=False, indent=2)
+
+
+def prune_old_checkpoints(output_dir: str, keep_limit: int, runtime: DistributedContext) -> None:
+    """按 step 序删除较旧的周期性 checkpoint。"""
+
+    if keep_limit <= 0 or not is_main_process(runtime):
+        return
+
+    output_root = Path(output_dir)
+    checkpoint_dirs = sorted(
+        path for path in output_root.glob("checkpoint-step-*") if path.is_dir()
+    )
+    stale_dirs = checkpoint_dirs[:-keep_limit]
+    for checkpoint_dir in stale_dirs:
+        shutil.rmtree(checkpoint_dir)
+
+
+def compute_training_budget(config: TrainConfig, steps_per_epoch: int) -> tuple[int, int, float]:
+    """把用户配置归一成“实际训练步数 + 实际循环 epoch 数”。"""
+
+    if steps_per_epoch <= 0:
+        raise ValueError("Training dataloader is empty. Check dataset splits and batch size.")
+
+    if config.max_steps > 0:
+        target_steps = config.max_steps
+        loop_epochs = math.ceil(target_steps / steps_per_epoch)
+    else:
+        loop_epochs = config.num_epochs
+        target_steps = loop_epochs * steps_per_epoch
+
+    effective_epochs = target_steps / steps_per_epoch
+    return target_steps, loop_epochs, effective_epochs
+
+
 @torch.no_grad()
 def evaluate(
     model,
     dataloader: DataLoader,
-    tokenizer,
-    eval_source_dataset,
     runtime: DistributedContext,
     config: TrainConfig,
 ) -> dict[str, float | str]:
-    """Run validation metrics for both LM loss and task-level rollout grading.
+    """Run validation metrics for LM loss only.
 
-    这里把两类评测放在一起：
-    - `val_loss / ppl` 反映语言模型的 token-level 拟合程度
-    - `rollout_acc` 反映模型真正把题做出来时的正确率
-
-    这也是大模型训练里很常见的评测组织方式：
-    “保留底层 loss 指标，同时补充更贴近任务目标的高层指标”。
+    当前训练主循环只负责快速给出 token-level 拟合指标。
+    rollout 任务级评测已经从 trainer 主循环中解耦出去，改由独立脚本消费 checkpoint。
+    这样训练速度和评测速度就不会再互相绑死。
     """
 
     model.eval()
@@ -311,31 +388,7 @@ def evaluate(
 
     avg_loss = total_loss / max(total_steps, 1)
     ppl = math.exp(avg_loss) if avg_loss < 20 else float("inf")
-    metrics: dict[str, float | str] = {"loss": avg_loss, "ppl": ppl}
-
-    if config.rollout_eval:
-        metrics.update(
-            evaluate_rollout_accuracy(
-                model=model,
-                tokenizer=tokenizer,
-                eval_source_dataset=eval_source_dataset,
-                runtime=runtime,
-                max_new_tokens=config.rollout_max_new_tokens,
-                max_samples=config.rollout_eval_max_samples,
-            )
-        )
-
-    if config.eval_preview:
-        preview = generate_eval_preview(
-            model=model,
-            tokenizer=tokenizer,
-            runtime=runtime,
-            max_new_tokens=config.rollout_max_new_tokens,
-        )
-        metrics["preview_question"] = preview["question"]
-        metrics["preview_completion"] = preview["completion"]
-
-    return metrics
+    return {"loss": avg_loss, "ppl": ppl}
 
 
 def train(config: TrainConfig) -> None:
@@ -349,7 +402,7 @@ def train(config: TrainConfig) -> None:
 
         tokenizer = build_tokenizer(config)
         model = build_model(config, runtime, tokenizer.pad_token_id)
-        train_loader, eval_loader, train_sampler, eval_source_dataset = build_dataloaders(config, tokenizer, runtime)
+        train_loader, eval_loader, train_sampler, _eval_source_dataset = build_dataloaders(config, tokenizer, runtime)
 
         optimizer = torch.optim.AdamW(
             model.parameters(),
@@ -357,15 +410,16 @@ def train(config: TrainConfig) -> None:
             weight_decay=config.weight_decay,
         )
 
-        total_training_steps = config.num_epochs * len(train_loader)
-        if total_training_steps == 0:
-            raise ValueError("Training dataloader is empty. Check dataset splits and batch size.")
+        target_training_steps, loop_epochs, effective_epochs = compute_training_budget(
+            config=config,
+            steps_per_epoch=len(train_loader),
+        )
 
-        warmup_steps = int(total_training_steps * config.warmup_ratio)
+        warmup_steps = int(target_training_steps * config.warmup_ratio)
         scheduler = get_linear_schedule_with_warmup(
             optimizer,
             num_warmup_steps=warmup_steps,
-            num_training_steps=total_training_steps,
+            num_training_steps=target_training_steps,
         )
 
         log_main(
@@ -380,15 +434,19 @@ def train(config: TrainConfig) -> None:
             f"rollout_eval={config.rollout_eval} "
             f"rollout_eval_max_samples={config.rollout_eval_max_samples} "
             f"output_dir={config.output_dir} "
-            f"train_steps_per_epoch={len(train_loader)}",
+            f"train_steps_per_epoch={len(train_loader)} "
+            f"target_max_steps={target_training_steps} "
+            f"effective_epochs_for_budget={effective_epochs:.2f} "
+            f"checkpoint_every={config.checkpoint_every}",
         )
 
         global_step = 0
         running_loss = 0.0
         steps_since_log = 0
         stop_training = False
+        latest_eval_metrics: dict[str, float | str] = {}
 
-        for epoch in range(config.num_epochs):
+        for epoch in range(loop_epochs):
             model.train()
             log_main(runtime, f"epoch_start epoch={epoch}")
 
@@ -461,26 +519,38 @@ def train(config: TrainConfig) -> None:
                     steps_since_log = 0
 
                 if config.eval_every > 0 and global_step % config.eval_every == 0:
-                    metrics = evaluate(model, eval_loader, tokenizer, eval_source_dataset, runtime, config)
+                    metrics = evaluate(model, eval_loader, runtime, config)
+                    latest_eval_metrics = metrics
                     eval_message = (
                         f"[eval] step={global_step} "
                         f"val_loss={metrics['loss']:.4f} "
                         f"val_ppl={metrics['ppl']:.4f}"
                     )
-                    if config.rollout_eval:
-                        eval_message += (
-                            f" rollout_acc={metrics['rollout_acc']:.4f} "
-                            f"rollout_correct={int(metrics['rollout_correct'])} "
-                            f"rollout_total={int(metrics['rollout_total'])}"
-                        )
                     log_main(runtime, eval_message)
-                    if config.eval_preview:
-                        preview_completion = str(metrics["preview_completion"]).strip() or "<empty>"
-                        log_main(runtime, f"[eval_preview] question={EVAL_PREVIEW_QUESTION}")
-                        log_main(runtime, f"[eval_preview] completion={preview_completion}")
                     model.train()
 
-                if config.max_steps > 0 and global_step >= config.max_steps:
+                should_save_checkpoint = (
+                    config.checkpoint_every > 0
+                    and global_step % config.checkpoint_every == 0
+                    and global_step < target_training_steps
+                )
+                if should_save_checkpoint:
+                    save_periodic_checkpoint(
+                        model=model,
+                        tokenizer=tokenizer,
+                        config=config,
+                        runtime=runtime,
+                        step=global_step,
+                        metrics=latest_eval_metrics,
+                    )
+                    prune_old_checkpoints(
+                        output_dir=config.output_dir,
+                        keep_limit=config.max_checkpoints_to_keep,
+                        runtime=runtime,
+                    )
+                    model.train()
+
+                if global_step >= target_training_steps:
                     stop_training = True
                     break
 
@@ -498,24 +568,14 @@ def train(config: TrainConfig) -> None:
             if stop_training:
                 break
 
-        metrics = evaluate(model, eval_loader, tokenizer, eval_source_dataset, runtime, config)
+        metrics = evaluate(model, eval_loader, runtime, config)
         final_message = (
             "training_done "
             f"steps={global_step} "
             f"val_loss={metrics['loss']:.4f} "
             f"val_ppl={metrics['ppl']:.4f}"
         )
-        if config.rollout_eval:
-            final_message += (
-                f" rollout_acc={metrics['rollout_acc']:.4f} "
-                f"rollout_correct={int(metrics['rollout_correct'])} "
-                f"rollout_total={int(metrics['rollout_total'])}"
-            )
         log_main(runtime, final_message)
-        if config.eval_preview:
-            preview_completion = str(metrics["preview_completion"]).strip() or "<empty>"
-            log_main(runtime, f"[eval_preview] question={EVAL_PREVIEW_QUESTION}")
-            log_main(runtime, f"[eval_preview] completion={preview_completion}")
         save_training_outputs(
             model=model,
             tokenizer=tokenizer,
