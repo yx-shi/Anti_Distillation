@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import random
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -23,10 +22,9 @@ DEFAULT_OUTPUT_DIR = "result/pre_exp/datasets/smoke/selections"
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Select baseline/random/adversarial candidates from scored teacher outputs.")
+    parser = argparse.ArgumentParser(description="Select baseline/adversarial candidates from scored teacher outputs.")
     parser.add_argument("--input-file", default=DEFAULT_INPUT_FILE)
     parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)
-    parser.add_argument("--seed", type=int, default=42)
     return parser
 
 
@@ -86,18 +84,6 @@ def build_selection_record(
     }
 
 
-def choose_random_correct(candidates: list[dict[str, Any]], seed: int, sample_id: int) -> dict[str, Any]:
-    correct_candidates = [item for item in candidates if item.get("is_correct", False)]
-    if not correct_candidates:
-        raise ValueError("No correct candidate is available for random selection.")
-
-    # 用“全局种子 + sample_id”生成每题自己的随机流，避免：
-    # - 题目遍历顺序一变，随机选择结果也跟着漂移
-    # - 后续插入日志/过滤步骤时，随机结果不稳定
-    rng = random.Random(f"{seed}:{sample_id}")
-    return correct_candidates[rng.randrange(len(correct_candidates))]
-
-
 def choose_adversarial(candidates: list[dict[str, Any]]) -> dict[str, Any]:
     correct_candidates = [item for item in candidates if item.get("is_correct", False)]
     if not correct_candidates:
@@ -123,7 +109,6 @@ def main() -> None:
         grouped_candidates[int(record["sample_id"])].append(record)
 
     baseline_records: list[dict[str, Any]] = []
-    random_records: list[dict[str, Any]] = []
     adversarial_records: list[dict[str, Any]] = []
 
     for sample_id in sorted(grouped_candidates):
@@ -152,24 +137,12 @@ def main() -> None:
         )
 
         if correct_candidates:
-            random_selected = choose_random_correct(candidates, args.seed, sample_id)
-            random_fallback_reason = ""
             adversarial_selected = choose_adversarial(candidates)
             adversarial_fallback_reason = ""
         else:
-            random_selected = baseline_selected
             adversarial_selected = baseline_selected
-            random_fallback_reason = baseline_fallback_reason or "no_correct_candidate"
             adversarial_fallback_reason = baseline_fallback_reason or "no_correct_candidate"
 
-        random_records.append(
-            build_selection_record(
-                random_selected,
-                selection_mode="teacher_random_from_k",
-                teacher_candidate_count=teacher_candidate_count,
-                fallback_reason=random_fallback_reason,
-            )
-        )
         adversarial_records.append(
             build_selection_record(
                 adversarial_selected,
@@ -181,7 +154,6 @@ def main() -> None:
 
     output_dir = Path(args.output_dir)
     write_jsonl(output_dir / "teacher_baseline.selected.jsonl", baseline_records)
-    write_jsonl(output_dir / "teacher_random_from_k.selected.jsonl", random_records)
     write_jsonl(output_dir / "teacher_adversarial.selected.jsonl", adversarial_records)
 
     print(

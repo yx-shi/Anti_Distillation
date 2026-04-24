@@ -4,7 +4,7 @@ set -euo pipefail
 
 # 这个脚本把当前 smoke 预实验的整条链路串起来：
 # teacher_generate -> student_score -> select_candidates -> build_distill_dataset
-# -> analyze_dataset -> 三组 SFT -> checkpoint subset eval(可选) -> final eval
+# -> analyze_dataset -> 两组 SFT -> checkpoint subset eval(可选) -> final eval
 #
 # 设计目标：
 # 1. 后续你自己复现实验时，只需要改顶部变量，不需要手工拼很多命令。
@@ -29,6 +29,12 @@ export VLLM_USE_V1=0
 # 显式改成 spawn 可以稳定启动多卡 vLLM。
 export VLLM_WORKER_MULTIPROC_METHOD=spawn
 
+# 一些 PyTorch / Triton 的运行时会在首次编译 CUDA helper 时走到
+# `gcc ... -lcuda` 这条链路；服务器默认库路径里往往只有 `libcuda.so.1`，
+# 缺少链接阶段需要的无版本名 `libcuda.so`。
+# 这里补上 driver stub 所在目录，属于很常见的“只影响编译期搜索路径”的修复范式。
+export LIBRARY_PATH="/usr/lib/x86_64-linux-gnu/stubs${LIBRARY_PATH:+:${LIBRARY_PATH}}"
+
 # 减少多进程场景下 CPU 线程争抢。
 export OMP_NUM_THREADS=1
 export PYTHONUNBUFFERED=1
@@ -43,7 +49,7 @@ STUDENT_MODEL="/home/disk1/public_checkpoint/Qwen3-1.7B"
 
 # 这次是较大规模的数据侧预实验，不再沿用 smoke 目录，
 # 避免把已经跑好的 128-sample smoke 结果覆盖掉。
-EXPERIMENT_NAME="main7000"
+EXPERIMENT_NAME="main5000"
 RESULT_ROOT="result/pre_exp"
 CANDIDATE_DIR="${RESULT_ROOT}/candidates/${EXPERIMENT_NAME}"
 DATASET_DIR="${RESULT_ROOT}/datasets/${EXPERIMENT_NAME}"
@@ -59,7 +65,7 @@ mkdir -p "${CANDIDATE_DIR}" "${DATASET_DIR}" "${SELECTION_DIR}" "${RUN_DIR}" "${
 # Smoke 数据与生成参数
 ###############################################################################
 
-MAX_SAMPLES=7000
+MAX_SAMPLES=5000
 SUBSET_SEED=42
 
 # Teacher 每题采 8 个候选，这是当前 response-level 预实验的核心设置。
@@ -72,12 +78,23 @@ TOP_P=0.8
 GEN_MAX_NEW_TOKENS=512
 
 # prompt_batch_size 控制一次送进 vLLM 的 prompt 数。
-# 它主要影响“整体进度条多久更新一次”和“单次 generate 调用有多大”。
-GEN_PROMPT_BATCH_SIZE=256
+# 这次把它调到 64，而不是更激进的 256：
+# - 对当前 5000 条长任务，更容易更早看到 batch 完成和中间落盘
+# - 即使某个 batch 因为长回答拖慢，也不会把“无可见进度”的时间拉得太长
+GEN_PROMPT_BATCH_SIZE=64
+
+# max_num_seqs 控制 vLLM scheduler 同时维护的序列数。
+# 这是吞吐相关参数，不是“总共生成多少条”的参数：
+# - 太小：GPU 并行度吃不满，teacher generate 会非常慢。
+# - 太大：KV cache 压力更高，可能 OOM。
+# 128 是 vLLM 0.8.5 的常见默认量级，适合作为本次 8 卡 teacher 生成的起点。
+GEN_MAX_NUM_SEQS=128
 
 # save_every_prompts 控制增量落盘频率。
-# 例如设成 1000，表示每处理完 1000 条 prompt，就把当前结果追加写入 candidate_pool.jsonl。
-SAVE_EVERY_PROMPTS=1000
+# 这里直接和 prompt_batch_size 对齐成 64，属于长任务里很常见的稳妥范式：
+# - 每完成一个 outer batch 就落一次盘
+# - 中途被打断时，最多只损失当前 batch 的结果
+SAVE_EVERY_PROMPTS=64
 
 
 ###############################################################################
@@ -85,6 +102,11 @@ SAVE_EVERY_PROMPTS=1000
 ###############################################################################
 
 # 打分是前向算 NLL，不需要多卡；默认单卡即可。
+# 这里把物理 GPU 和进程内 device 分开写，是一个很常见也很实用的范式：
+# - `CUDA_VISIBLE_DEVICES=5` 决定“这个进程实际上只能看到哪张物理卡”
+# - 进程内部再用 `cuda:0`，表示“当前可见设备里的第 0 张”
+# 这样可以稳定避开服务器上已经被别人占用的物理 GPU0。
+SCORE_VISIBLE_DEVICES="5"
 SCORE_DEVICE="cuda:0"
 SCORE_BATCH_SIZE=4
 SCORE_MAX_LENGTH=2048
@@ -94,8 +116,8 @@ SCORE_MAX_LENGTH=2048
 # SFT 训练参数
 ###############################################################################
 
-TRAIN_GPU_IDS="0,1,2,3,4,5,6,7"
-TRAIN_NPROC=8
+TRAIN_GPU_IDS="1,2,3,4,5,6,7"
+TRAIN_NPROC=7
 
 # max_steps 现在是训练预算的一等公民。
 # 128 样本 smoke 下，100 step 大概是 12.5 个 epoch，足够看趋势，但不会像 1000 step 那么夸张。
@@ -123,8 +145,11 @@ TRAIN_SEED=42
 ###############################################################################
 
 EVAL_ENGINE="vllm"
-EVAL_GPU_IDS="0,1,2,3,4,5,6,7"
-EVAL_TP_SIZE=8
+# vLLM 的 tensor parallel size 需要能整除模型 attention heads。
+# Qwen3-8B 的 attention heads 是 32，因此 7 卡 TP 不合法；
+# 这里退回到 4 卡，是当前空闲卡里最稳妥、兼顾吞吐和兼容性的设置。
+EVAL_GPU_IDS="1,2,3,4"
+EVAL_TP_SIZE=4
 
 # 固定 64 条子集，用来看 checkpoint 学习曲线。
 CHECKPOINT_EVAL_MAX_SAMPLES=64
@@ -139,7 +164,7 @@ FINAL_EVAL_MAX_SAMPLES=0
 
 # 这些开关方便你重跑局部阶段。
 # 例如只想重跑最终评测，可以把前面都改成 0，只保留 RUN_FINAL_EVAL=1。
-RUN_TEACHER_GENERATE=1
+RUN_TEACHER_GENERATE=0
 RUN_STUDENT_SCORE=1
 RUN_SELECT_AND_BUILD=1
 RUN_ANALYZE_DATASET=1
@@ -160,7 +185,6 @@ DATASET_SUMMARY_FILE="${ANALYSIS_DIR}/dataset_summary.json"
 
 MODES=(
   "teacher_baseline"
-  "teacher_random_from_k"
   "teacher_adversarial"
 )
 
@@ -287,7 +311,9 @@ if [[ "${RUN_TEACHER_GENERATE}" == "1" ]]; then
       --max-new-tokens ${GEN_MAX_NEW_TOKENS} \
       --prompt-batch-size ${GEN_PROMPT_BATCH_SIZE} \
       --save-every-prompts ${SAVE_EVERY_PROMPTS} \
+      --max-num-seqs ${GEN_MAX_NUM_SEQS} \
       --tensor-parallel-size ${EVAL_TP_SIZE} \
+      --enforce-eager \
       --trust-remote-code \
       --use-tqdm
   "
@@ -300,7 +326,7 @@ fi
 
 if [[ "${RUN_STUDENT_SCORE}" == "1" ]]; then
   run_cmd bash -lc "
-    CUDA_VISIBLE_DEVICES=0 \
+    CUDA_VISIBLE_DEVICES=${SCORE_VISIBLE_DEVICES} \
     ${CONDA_RUN} python src/pre_exp/student_score.py \
       --model-name-or-path ${STUDENT_MODEL} \
       --input-file ${CANDIDATE_POOL_FILE} \
@@ -319,8 +345,7 @@ fi
 if [[ "${RUN_SELECT_AND_BUILD}" == "1" ]]; then
   run_cmd ${CONDA_RUN} python src/pre_exp/select_candidates.py \
     --input-file "${SCORED_CANDIDATES_FILE}" \
-    --output-dir "${SELECTION_DIR}" \
-    --seed "${SUBSET_SEED}"
+    --output-dir "${SELECTION_DIR}"
 
   for mode in "${MODES[@]}"; do
     run_cmd ${CONDA_RUN} python src/pre_exp/build_distill_dataset.py \
@@ -338,19 +363,17 @@ if [[ "${RUN_ANALYZE_DATASET}" == "1" ]]; then
   run_cmd ${CONDA_RUN} python src/pre_exp/analyze_dataset.py \
     --scored-candidates "${SCORED_CANDIDATES_FILE}" \
     --baseline-file "${SELECTION_DIR}/teacher_baseline.selected.jsonl" \
-    --random-file "${SELECTION_DIR}/teacher_random_from_k.selected.jsonl" \
     --adversarial-file "${SELECTION_DIR}/teacher_adversarial.selected.jsonl" \
     --output-file "${DATASET_SUMMARY_FILE}"
 fi
 
 
 ###############################################################################
-# 阶段 E: 三组 SFT
+# 阶段 E: 两组 SFT
 ###############################################################################
 
 if [[ "${RUN_TRAIN}" == "1" ]]; then
   train_one_mode "teacher_baseline" "29601"
-  train_one_mode "teacher_random_from_k" "29602"
   train_one_mode "teacher_adversarial" "29603"
 fi
 

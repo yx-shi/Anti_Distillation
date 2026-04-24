@@ -138,8 +138,8 @@ $$KL(p_T || p_S)$$
 
 | 角色      | 模型       |
 | ------- | -------- |
-| Teacher | 7B/13B模型 |
-| Student | 1B/3B模型  |
+| Teacher | Qwen3-8B |
+| Student | Qwen3-1.7B  |
 
 ### 数据集
 

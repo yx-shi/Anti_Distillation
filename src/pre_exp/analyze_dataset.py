@@ -19,7 +19,6 @@ from pre_exp.common import read_jsonl, write_json
 
 DEFAULT_SCORED_FILE = "result/pre_exp/candidates/smoke/scored_candidates.jsonl"
 DEFAULT_BASELINE_FILE = "result/pre_exp/datasets/smoke/selections/teacher_baseline.selected.jsonl"
-DEFAULT_RANDOM_FILE = "result/pre_exp/datasets/smoke/selections/teacher_random_from_k.selected.jsonl"
 DEFAULT_ADVERSARIAL_FILE = "result/pre_exp/datasets/smoke/selections/teacher_adversarial.selected.jsonl"
 DEFAULT_OUTPUT_FILE = "result/pre_exp/analysis/smoke/dataset_summary.json"
 
@@ -28,7 +27,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Analyze scored/selected datasets for the smoke pre-experiment.")
     parser.add_argument("--scored-candidates", default=DEFAULT_SCORED_FILE)
     parser.add_argument("--baseline-file", default=DEFAULT_BASELINE_FILE)
-    parser.add_argument("--random-file", default=DEFAULT_RANDOM_FILE)
     parser.add_argument("--adversarial-file", default=DEFAULT_ADVERSARIAL_FILE)
     parser.add_argument("--output-file", default=DEFAULT_OUTPUT_FILE)
     return parser
@@ -57,7 +55,6 @@ def main() -> None:
 
     scored_records = read_jsonl(args.scored_candidates)
     baseline_records = read_jsonl(args.baseline_file)
-    random_records = read_jsonl(args.random_file)
     adversarial_records = read_jsonl(args.adversarial_file)
 
     total_candidates = len(scored_records)
@@ -89,12 +86,6 @@ def main() -> None:
                 "fallback_rate": fallback_rate(baseline_records),
                 "completion_token_count": summarize_numeric(
                     [float(item.get("student_token_count", 0)) for item in baseline_records]
-                ),
-            },
-            "teacher_random_from_k": {
-                "fallback_rate": fallback_rate(random_records),
-                "completion_token_count": summarize_numeric(
-                    [float(item.get("student_token_count", 0)) for item in random_records]
                 ),
             },
             "teacher_adversarial": {

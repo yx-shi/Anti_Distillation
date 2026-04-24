@@ -120,11 +120,11 @@ Teacher 候选生成阶段固定使用：
 3. 使用现有 `grading` 管线提取最终 GSM8K 答案。
 4. 只保留最终答案判分为正确的候选。
 
-如果某个 prompt 没有任何正确候选，则三组蒸馏数据统一回退到同一条 deterministic baseline 样本，并写入：
+如果某个 prompt 没有任何正确候选，则两组蒸馏数据统一回退到同一条 deterministic baseline 样本，并写入：
 
 - `fallback_reason=no_correct_candidate`
 
-这样做的目的，是保证三组数据在样本覆盖和训练规模上仍然对齐，避免因为跳题导致额外变量进入实验。
+这样做的目的，是保证两组数据在样本覆盖和训练规模上仍然对齐，避免因为跳题导致额外变量进入实验。
 
 ### 阶段 C：Student 打分
 
@@ -152,27 +152,21 @@ Student 打分使用 `transformers + torch`，不使用 vLLM。原因是：
 
 所有训练组共享同一个候选池和同一套过滤结果，只允许**候选选择规则**不同。
 
-本轮正式必做的训练组固定为三组：
+本轮正式必做的训练组固定为两组：
 
 1. `teacher_baseline`
 2. `teacher_adversarial`
-3. `teacher_random_from_k`
 
 额外允许一个可选 sanity-check 组：
 
-4. `gold_sft`
+3. `gold_sft`
 
-其中，三组蒸馏选择规则固定如下。
+其中，两组蒸馏选择规则固定如下。
 
 #### `teacher_baseline`
 
 - 在正确候选里按生成顺序选择第一个
 - 如果没有正确候选，则回退到第一个有效候选
-
-#### `teacher_random_from_k`
-
-- 在正确候选里按固定随机种子随机选一个
-- 如果没有正确候选，则回退到 `teacher_baseline`
 
 #### `teacher_adversarial`
 
@@ -307,7 +301,7 @@ src/pre_exp/
 其中：
 
 - `prompt` 与 `completion` 是最终送入 SFT 的标准字段
-- `selection_mode` 取值固定为 `teacher_baseline` / `teacher_random_from_k` / `teacher_adversarial`
+- `selection_mode` 取值固定为 `teacher_baseline` / `teacher_adversarial`
 
 ## 9. 对 `src/sft/*` 的接口要求
 
@@ -377,7 +371,7 @@ result/pre_exp/
 - `result/pre_exp/candidates/`
   - 候选池与打分文件
 - `result/pre_exp/datasets/`
-  - 三组蒸馏 JSONL
+  - 两组蒸馏 JSONL
 - `result/pre_exp/runs/`
   - 训练日志与 checkpoint
 - `result/pre_exp/analysis/`
@@ -387,7 +381,7 @@ result/pre_exp/
 
 ### 11.1 训练预算
 
-三组正式实验必须使用完全一致的 Student 初始化和超参数。
+两组正式实验必须使用完全一致的 Student 初始化和超参数。
 
 冻结的训练预算：
 
@@ -427,7 +421,7 @@ result/pre_exp/
 
 1. 候选正确率
 2. fallback 样本占比
-3. 三组选中 response 的长度分布
+3. 两组选中 response 的长度分布
 4. `teacher_baseline` 与 `teacher_adversarial` 之间的平均 `student_mean_nll` 差值
 
 这些统计是必须的，因为如果最终只看到训练曲线差异，却不知道数据层面发生了什么，就很难判断实验是否真的支持 anti-distillation 假设。
@@ -506,7 +500,7 @@ result/pre_exp/
 2. 用 vLLM 在 smoke 子集上生成候选并人工抽查
 3. 接入 `grading` 完成 extractable + correctness 过滤
 4. 实现 Student completion-token mean NLL 打分
-5. 产出三组蒸馏 JSONL
+5. 产出两组蒸馏 JSONL
 6. 扩展 `src/sft` 数据接口，使其能读取 `distill_jsonl`
 7. 在 smoke run 上打通训练与评测
 8. 运行 2000 样本 main run，汇总曲线和最终结果
@@ -519,4 +513,4 @@ result/pre_exp/
 
 本预实验的正式目标是：
 
-> 在统一的 Qwen3 prompt 体系下，基于同一个 Teacher 候选池，比较 baseline / random / adversarial 三种 response 选择规则对 Student 学习曲线的影响，并判断 response-level anti-distillation 是否已经能提供可观测的“蒸馏变难”信号。
+> 在统一的 Qwen3 prompt 体系下，基于同一个 Teacher 候选池，比较 baseline / adversarial 两种 response 选择规则对 Student 学习曲线的影响，并判断 response-level anti-distillation 是否已经能提供可观测的“蒸馏变难”信号。

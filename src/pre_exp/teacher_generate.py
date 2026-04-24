@@ -76,7 +76,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tensor-parallel-size", type=int, default=1)
     parser.add_argument("--dtype", default="bfloat16")
     parser.add_argument("--max-model-len", type=int, default=2048)
-    parser.add_argument("--max-num-seqs", type=int, default=4)
+    parser.add_argument(
+        "--max-num-seqs",
+        type=int,
+        default=128,
+        help=(
+            "vLLM scheduler 一次最多同时维护的序列数。"
+            "这是 batch inference 的关键吞吐参数：值太小会让 GPU 大部分时间吃不满。"
+            "vLLM 0.8.5 在未显式设置时也会回退到 128；这里显式写出，"
+            "避免误用很小的调试值导致 teacher generate 看起来像卡住。"
+        ),
+    )
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.8)
     parser.add_argument("--enforce-eager", action="store_true")
     parser.add_argument("--trust-remote-code", action="store_true")
@@ -200,6 +210,7 @@ def main() -> None:
     pending_records: list[dict[str, object]] = []
     completed_prompts = 0
     completed_records = 0
+    next_flush_prompts = args.save_every_prompts
     progress_bar = None
     try:
         llm = LLM(
@@ -231,9 +242,12 @@ def main() -> None:
                 flush=True,
             )
 
-            # 这里不再依赖 vLLM 内部的 tqdm。
-            # 原因是我们需要一个覆盖“全部 7000 条 prompt”的统一进度条，而不是每次单独 generate 调用的局部进度。
-            outputs = llm.generate(batch_prompts, sampling_params, use_tqdm=False)
+            # vLLM 的 LLM.generate 是阻塞调用：只有整个 batch 返回后，外层 Python
+            # 才能继续执行。因此如果只更新外层 tqdm，大 batch 会长时间看不到进度。
+            # 这里把 use_tqdm 透传给 vLLM，让 engine 在 batch 内部按完成的请求刷新进度。
+            # 常用范式：外层 tqdm 负责“全局已完成多少 prompt”，库内部 tqdm 负责
+            # “当前阻塞调用内部是否还在推进”。
+            outputs = llm.generate(batch_prompts, sampling_params, use_tqdm=args.use_tqdm)
 
             batch_records: list[dict[str, object]] = []
             for sample_payload, output in zip(batch_prompt_payloads, outputs):
@@ -272,8 +286,14 @@ def main() -> None:
                     buffered_records=len(pending_records),
                 )
 
+            # 这里不能写成 `completed_prompts % save_every_prompts == 0`。
+            # 原因是 prompt_batch_size 和 save_every_prompts 往往不是整除关系；
+            # 例如 256 一批、每 1000 条落盘，那么 completed_prompts 会走
+            # 256/512/768/1024/...，永远碰不到“恰好等于 1000”。
+            #
+            # 更稳的常用范式是“跨过阈值就 flush 一次”，而不是“只在精确命中阈值时 flush”。
             should_flush = (
-                completed_prompts % args.save_every_prompts == 0
+                completed_prompts >= next_flush_prompts
                 or completed_prompts >= total_prompts
             )
             if should_flush:
@@ -288,6 +308,8 @@ def main() -> None:
                     flush=True,
                 )
                 pending_records.clear()
+                while next_flush_prompts <= completed_prompts:
+                    next_flush_prompts += args.save_every_prompts
     finally:
         if progress_bar is not None:
             progress_bar.close()
