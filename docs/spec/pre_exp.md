@@ -1,10 +1,12 @@
-# 预实验规格说明：Response-level Anti-Distillation
+# Response-Level Pre-Experiment Spec
+
+本文档记录 response-level 预实验的主要规格和实现口径。早期版本以 GSM8K 为默认数据集；后续实验已转向 DeepScaleR，数据集与下一轮参数建议见 `data_and_eval.md` 和 `../plan/pre_exp_next_run.md`。
 
 ## 1. 文档目标
 
 这份文档定义项目第一轮预实验的**最终实现规格**。目标不是直接实现最终的 token-level anti-distillation，而是先用一个更容易落地的 response-level 版本验证下面这个核心问题：
 
-> 对同一个 GSM8K prompt，让 Teacher 生成 `k` 个候选回答，再选择其中 **Student 条件概率最低**（等价地，completion token 平均 NLL 最高）的回答作为蒸馏样本，是否会让 Student 的性能提升速度慢于普通蒸馏？
+> 对同一个数学题 prompt，让 Teacher 生成 `k` 个候选回答，再选择其中 **Student 条件概率最低**（等价地，completion token 平均 NLL 最高）的回答作为蒸馏样本，是否会让 Student 的性能提升速度慢于普通蒸馏？
 
 这里的“慢”不是模糊描述，而是指：
 
@@ -12,9 +14,7 @@
 2. 这种变慢不能主要由“答案错误变多”或“response 长度异常膨胀”解释。
 3. Teacher 候选本身仍保留基本任务质量，因此实验结论可以被解释为“更难蒸馏”，而不是“Teacher 输出坏掉了”。
 
-这次只重写方案文档，不修改仓库中的其他代码。
-
-## 2. 本轮预实验冻结的默认设置
+## 2. 早期 GSM8K 预实验冻结设置
 
 ### 2.1 模型与数据
 
@@ -30,7 +30,22 @@
 - Student 打分与训练框架：`transformers + torch`
 - 项目运行环境：`conda` 环境 `adistill-unified`
 
-### 2.3 Prompt 规范
+### 2.3 当前 DeepScaleR 调整
+
+GSM8K 预实验显示任务偏简单，后续实验转向 `agentica-org/DeepScaleR-Preview-Dataset`。当前建议：
+
+- `question_field=problem`
+- `answer_field=answer`
+- `num_candidates=10`
+- `temperature=0.9`
+- `top_p=0.9`
+- `max_new_tokens=2048`
+- `max_model_len=6144`
+- selection policy 严格排除截断候选，再在正确候选中做 baseline/adversarial 选择
+
+256-sample smoke 的详细结论见 `../plan/pre_exp_next_run.md`。
+
+### 2.4 Prompt 规范
 
 预实验从这轮开始统一向 **Qwen3 官方 chat template** 靠拢，而不是继续扩展当前仓库里手写的 `### Question / ### Answer` 模板。
 

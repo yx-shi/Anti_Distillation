@@ -35,6 +35,25 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dataset-name", default="openai/gsm8k")
     parser.add_argument("--dataset-config-name", default="main")
     parser.add_argument("--split", default="train")
+    parser.add_argument(
+        "--question-field",
+        default="question",
+        help=(
+            "数据集中题目文本所在的列名。"
+            "Hugging Face datasets 会把每条样本表示成 dict；"
+            "把列名做成参数，是适配不同数学数据集 schema 的常见范式。"
+            "例如 GSM8K 用 question，DeepScaleR-Preview-Dataset 用 problem。"
+        ),
+    )
+    parser.add_argument(
+        "--answer-field",
+        default="answer",
+        help=(
+            "数据集中标准答案所在的列名。"
+            "GSM8K 的 answer 字段包含推理和 #### 最终答案，"
+            "DeepScaleR 的 answer 字段通常已经是短答案；后续会统一抽成 gold_answer。"
+        ),
+    )
     parser.add_argument("--max-samples", type=int, default=128)
     parser.add_argument("--subset-seed", type=int, default=42)
     parser.add_argument("--num-candidates", type=int, default=8)
@@ -152,7 +171,21 @@ def main() -> None:
     prompts: list[str] = []
 
     for dataset_idx, sample in zip(subset_indices, subset_samples):
-        question = sample["question"].strip()
+        if args.question_field not in sample:
+            available_fields = ", ".join(sorted(sample.keys()))
+            raise KeyError(
+                f"Question field `{args.question_field}` is not present in dataset sample. "
+                f"Available fields: {available_fields}"
+            )
+        if args.answer_field not in sample:
+            available_fields = ", ".join(sorted(sample.keys()))
+            raise KeyError(
+                f"Answer field `{args.answer_field}` is not present in dataset sample. "
+                f"Available fields: {available_fields}"
+            )
+
+        question = str(sample[args.question_field]).strip()
+        raw_answer = str(sample[args.answer_field]).strip()
         messages = build_qwen3_messages(question)
         prompt_text = render_qwen3_prompt(
             tokenizer=tokenizer,
@@ -163,8 +196,8 @@ def main() -> None:
             {
                 "sample_id": int(dataset_idx),
                 "question": question,
-                "gold_answer": extract_gsm8k_final_answer(sample["answer"]),
-                "gold_answer_raw": sample["answer"].strip(),
+                "gold_answer": extract_gsm8k_final_answer(raw_answer),
+                "gold_answer_raw": raw_answer,
                 "messages": messages,
                 "prompt_text": prompt_text,
             }

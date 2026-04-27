@@ -1,5 +1,16 @@
 # Anti Distillation
 
+## Documentation
+
+Coding agents should start from `AGENTS.md` and `docs/README.md`.
+
+The docs follow progressive disclosure:
+
+- `docs/spec/`: current facts and interfaces
+- `docs/plan/`: intended direction and experiment plans
+- `docs/task/`: concrete implementation lists for agents
+- `docs/archive/`: historical material
+
 ## Recommended Environment
 
 For the long-term "SFT training + vLLM 0.8.5 decoding" workflow, the repo now includes a unified environment manifest:

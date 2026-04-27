@@ -1,3 +1,5 @@
+# Anti Distillation Core Idea
+
 (Credit by GPT5.2)
 
 ## 一、背景介绍
@@ -233,43 +235,7 @@ $$KL(p_T || p_S)$$
 
 * 与Watermarking结合
 
-# 八、进度安排
-
-## 第一阶段：理论与实现
-
-* ✅ 实现Cross-model decoding框架
-
-* ✅ 实现logits reweight版本
-
-* ✅ 完成小规模实验验证
-
-## 第二阶段：系统实验
-
-* ✅ 大规模蒸馏实验
-
-* ✅ 不同λ对比
-
-* ✅ 收敛速度分析
-
-* ✅ 分布统计分析
-
-## 第三阶段：稳定性与泛化
-
-* ✅ 不同任务验证
-
-* ✅ 多Student测试
-
-* ✅ 对比不同规模Teacher
-
-## 第四阶段：论文整理
-
-* ✅ 理论动机强化
-
-* ✅ 可视化
-
-* ✅ 撰写论文
-
-# 九、项目贡献点
+## 八、项目贡献点
 
 1. 提出一种推理阶段可部署的anti-distillation机制
 
@@ -280,95 +246,3 @@ $$KL(p_T || p_S)$$
 4) 可与watermark技术兼容
 
 5. 可形成商业API保护方案
-
-# 进度
-
-## 20260302-20260309
-
-* 完成服务器环境配置
-
-* 初步熟悉HF的Transformer框架
-
-* 完成一个HF的推理demo，并手写`generate`循环观察生成
-
-## 20260309-20260316
-
-* 用HF的tokenizer和torch手写完整SFT训练
-
-  * 模型用Qwen3-1.7B
-
-  * dataset为Dolly-15k
-
-* 熟悉torch训练pipeline
-
-## 20260316-20260323
-
-* SFT跑通，loss稳定下降
-
-  * 解决了之前由于部分数据prompt过长，label全被mask导致loss nan问题
-
-* 熟悉HF的tokenizer细节
-
-* 修改SFT
-
-  * 数据集换为gsm8k
-
-  * FSDP部署到多卡跑
-
-## 20260323-20260330
-
-* TODO
-
-  * [x] FSDP跑通
-
-    * [x] 2-4卡确保都能运行（2卡正常运行）
-
-  * [x] 接GSM 8k和MATH数据集跑通（MATH下架了）
-
-    * [ ] 自行处理数据混合和读取
-
-  - Vllm vanilla inference跑通
-
-    * vllm用0.8.5版本，跑的时候指定环境变量VLLM\_USE\_V1=0强制使用v0版本跑。因为是旧版本，参阅文档的时候注意版本号https://docs.vllm.ai/en/v0.8.5/
-
-    * 用offline Inference版本（`LLM`对象）
-
-    * 一般需要装flash-attention，这个包一般是直接通过whl文件来装的，可以根据系统选择包的版本https://github.com/Dao-AILab/flash-attention/releases
-
-  - 尝试魔改（代码`@李旭浚`提供）
-
-## 20260330-20260406
-
-* TODO
-
-  * [ ] 跑通vanilla vllm
-
-    * [ ] 看到显著的速度提升，监控GPU利用率和功率（watch nvidia-smi）
-
-    * [ ] 了解基本部件，不需要知道完整实现
-
-      * [ ] 和vanilla generate的较大区别
-
-        * [ ] Batch inference
-
-        * [ ] Prefill & Decoding
-
-      * [ ] 需要看：llm\_engine, executor, worker, model\_runner的关键函数，大致了解model\_input的构建，executor\_req的格式
-
-      * [ ] 不需要看：scheduler, page\_attention, swap
-
-  * [ ] 读懂+跑通魔改vllm
-
-    * [ ] 了解魔改链路
-
-  * [ ] 进一步修改，添加Adversarial Decoding的逻辑，跑通
-
-    * [ ] 分别实现hard和soft的机制，通过参数控制
-
-  * [ ] 在GSM prompt上用teacher（协同student）打一批adversarial data，蒸馏student
-
-    * [ ] Teacher Qwen3 8B
-
-      * [ ] https://modelscope.cn/models/Qwen/Qwen3-8B，初期先disable\_thinking
-
-    * [ ] Student Qwen3 1.7B
