@@ -514,7 +514,7 @@ result/pre_exp/
 
 1. 实现统一的 Qwen3 prompt helper，并设计 `candidate_pool.jsonl` / `distill_*.jsonl` schema
 2. 用 vLLM 在 smoke 子集上生成候选并人工抽查
-3. 接入 `grading` 完成 boxed-answer extractable + correctness 标注
+3. 接入 `grading` 完成 boxed / `Final Answer:` extractable + correctness 标注
 4. 实现 Student completion-token mean NLL 打分
 5. 产出两组蒸馏 JSONL
 6. 扩展 `src/sft` 数据接口，使其能读取 `distill_jsonl`

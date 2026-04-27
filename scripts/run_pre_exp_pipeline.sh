@@ -2,13 +2,13 @@
 
 set -euo pipefail
 
-# 这个脚本把当前 smoke 预实验的整条链路串起来：
+# 这个脚本把 DeepScaleR 正式预实验的数据侧链路串起来：
 # teacher_generate -> student_score -> select_candidates -> build_distill_dataset
-# -> analyze_dataset -> 两组 SFT -> checkpoint subset eval(可选) -> final eval
+# -> analyze_dataset
 #
 # 设计目标：
 # 1. 后续你自己复现实验时，只需要改顶部变量，不需要手工拼很多命令。
-# 2. 默认沿用当前项目已经验证过的 smoke 配置。
+# 2. 默认沿用当前项目已经验证过的 DeepScaleR smoke 配置。
 # 3. 重要参数都在脚本里加中文注释，方便回看“为什么当时这么设”。
 
 
@@ -49,7 +49,7 @@ STUDENT_MODEL="/home/disk1/public_checkpoint/Qwen3-1.7B"
 
 # 这次是较大规模的数据侧预实验，不再沿用 smoke 目录，
 # 避免把已经跑好的 128-sample smoke 结果覆盖掉。
-EXPERIMENT_NAME="main5000"
+EXPERIMENT_NAME="deepscaler_main8000_k8_t0.9_p0.85_len4096"
 RESULT_ROOT="result/pre_exp"
 CANDIDATE_DIR="${RESULT_ROOT}/candidates/${EXPERIMENT_NAME}"
 DATASET_DIR="${RESULT_ROOT}/datasets/${EXPERIMENT_NAME}"
@@ -60,26 +60,32 @@ RUN_DIR="/home/disk2/shiyixuan/pre_exp_runs/${EXPERIMENT_NAME}"
 ANALYSIS_DIR="${RESULT_ROOT}/analysis/${EXPERIMENT_NAME}"
 LOG_DIR="${ANALYSIS_DIR}/logs"
 
-mkdir -p "${CANDIDATE_DIR}" "${DATASET_DIR}" "${SELECTION_DIR}" "${RUN_DIR}" "${ANALYSIS_DIR}" "${LOG_DIR}"
+mkdir -p "${CANDIDATE_DIR}" "${DATASET_DIR}" "${SELECTION_DIR}" "${ANALYSIS_DIR}" "${LOG_DIR}"
 
 
 ###############################################################################
-# Smoke 数据与生成参数
+# 数据与生成参数
 ###############################################################################
 
-MAX_SAMPLES=5000
+DATASET_NAME="agentica-org/DeepScaleR-Preview-Dataset"
+DATASET_CONFIG_NAME="default"
+SPLIT="train"
+QUESTION_FIELD="problem"
+ANSWER_FIELD="answer"
+
+MAX_SAMPLES=8000
 SUBSET_SEED=42
 
 # Teacher 每题采 8 个候选，这是当前 response-level 预实验的核心设置。
 NUM_CANDIDATES=8
-TEMPERATURE=0.8
-TOP_P=0.8
+TEMPERATURE=0.9
+TOP_P=0.85
 
 GEN_MAX_NEW_TOKENS=4096
 
 # prompt_batch_size 控制一次送进 vLLM 的 prompt 数。
 # 这次把它调到 64，而不是更激进的 256：
-# - 对当前 5000 条长任务，更容易更早看到 batch 完成和中间落盘
+# - 对当前 8000 条长任务，更容易更早看到 batch 完成和中间落盘
 # - 即使某个 batch 因为长回答拖慢，也不会把“无可见进度”的时间拉得太长
 GEN_PROMPT_BATCH_SIZE=64
 
@@ -113,23 +119,32 @@ SCORE_MAX_LENGTH=8192
 
 
 ###############################################################################
+# Teacher 生成资源
+###############################################################################
+
+# Teacher 生成吃满 8 张 A100。Qwen3-8B 的 attention heads 可被 8 整除，TP=8 合法。
+TEACHER_GPU_IDS="0,1,2,3,4,5,6,7"
+TEACHER_TP_SIZE=8
+
+
+###############################################################################
 # SFT 训练参数
 ###############################################################################
 
-TRAIN_GPU_IDS="1,2,3,4,5,6,7"
-TRAIN_NPROC=7
+TRAIN_GPU_IDS="0,1,2,3,4,5,6,7"
+TRAIN_NPROC=8
 
 # max_steps 现在是训练预算的一等公民。
-# 当前 5000 条训练样本、7 卡、per-device batch size=2 时，
-# global batch size = 7 * 2 = 14；
-# 因此 1000 step 大约对应 5000 / 14 ≈ 357 step/epoch，也就是约 2.8 个 epoch。
+# 当前 8000 条训练样本、8 卡、per-device batch size=2 时，
+# global batch size = 8 * 2 = 16；
+# 因此 1000 step 大约对应 8000 / 16 = 500 step/epoch，也就是约 2 个 epoch。
 # 这个预算足够拉开 baseline / adversarial 的学习曲线，又不会把训练拖得过长。
 MAX_STEPS=1000
 EVAL_EVERY=200
 CHECKPOINT_EVERY=200
 MAX_CHECKPOINTS_TO_KEEP=5
 
-# main5000 数据里 completion 更长一些，因此把训练长度稍微放宽到 700。
+# DeepScaleR 数据里 completion 更长一些，因此把训练长度稍微放宽到 700。
 TRAIN_MAX_LENGTH=700
 
 # rollout token 上限用于离线评测，不再在 trainer 里做阻塞式 rollout。
@@ -166,16 +181,16 @@ FINAL_EVAL_MAX_SAMPLES=0
 ###############################################################################
 
 # 这些开关方便你重跑局部阶段。
-# 例如只想重跑最终评测，可以把前面都改成 0，只保留 RUN_FINAL_EVAL=1。
-RUN_TEACHER_GENERATE=0
-RUN_STUDENT_SCORE=0
-RUN_SELECT_AND_BUILD=0
-RUN_ANALYZE_DATASET=0
-RUN_TRAIN=1
+# 例如只想重跑分析，可以把前面都改成 0，只保留 RUN_ANALYZE_DATASET=1。
+RUN_TEACHER_GENERATE=1
+RUN_STUDENT_SCORE=1
+RUN_SELECT_AND_BUILD=1
+RUN_ANALYZE_DATASET=1
+RUN_TRAIN=0
 
 # checkpoint 子集评测不是必须，但对看学习曲线很有帮助。
 RUN_CHECKPOINT_EVAL=0
-RUN_FINAL_EVAL=1
+RUN_FINAL_EVAL=0
 
 
 ###############################################################################
@@ -302,9 +317,14 @@ final_eval_one_mode() {
 if [[ "${RUN_TEACHER_GENERATE}" == "1" ]]; then
   # 这里显式给 8 卡 tensor parallel，是为了把 teacher 生成速度尽量拉满。
   run_cmd bash -lc "
-    CUDA_VISIBLE_DEVICES=${EVAL_GPU_IDS} \
+    CUDA_VISIBLE_DEVICES=${TEACHER_GPU_IDS} \
     ${CONDA_RUN} python src/pre_exp/teacher_generate.py \
       --model-name-or-path ${TEACHER_MODEL} \
+      --dataset-name ${DATASET_NAME} \
+      --dataset-config-name ${DATASET_CONFIG_NAME} \
+      --split ${SPLIT} \
+      --question-field ${QUESTION_FIELD} \
+      --answer-field ${ANSWER_FIELD} \
       --output-file ${CANDIDATE_POOL_FILE} \
       --max-samples ${MAX_SAMPLES} \
       --subset-seed ${SUBSET_SEED} \
@@ -315,10 +335,13 @@ if [[ "${RUN_TEACHER_GENERATE}" == "1" ]]; then
       --prompt-batch-size ${GEN_PROMPT_BATCH_SIZE} \
       --save-every-prompts ${SAVE_EVERY_PROMPTS} \
       --max-num-seqs ${GEN_MAX_NUM_SEQS} \
-      --tensor-parallel-size ${EVAL_TP_SIZE} \
+      --max-model-len ${SCORE_MAX_LENGTH} \
+      --tensor-parallel-size ${TEACHER_TP_SIZE} \
+      --gpu-memory-utilization 0.85 \
       --enforce-eager \
       --trust-remote-code \
-      --use-tqdm
+      --use-tqdm \
+      2>&1 | tee ${LOG_DIR}/teacher_generate.log
   "
 fi
 
@@ -336,7 +359,8 @@ if [[ "${RUN_STUDENT_SCORE}" == "1" ]]; then
       --output-file ${SCORED_CANDIDATES_FILE} \
       --batch-size ${SCORE_BATCH_SIZE} \
       --max-length ${SCORE_MAX_LENGTH} \
-      --device ${SCORE_DEVICE}
+      --device ${SCORE_DEVICE} \
+      2>&1 | tee ${LOG_DIR}/student_score.log
   "
 fi
 
@@ -404,6 +428,7 @@ fi
 
 
 echo
-echo "Smoke pre-experiment pipeline finished."
-echo "Training runs:   ${RUN_DIR}"
-echo "Analysis files:  ${ANALYSIS_DIR}"
+echo "DeepScaleR main data-only pipeline finished."
+echo "Candidates: ${CANDIDATE_DIR}"
+echo "Datasets:   ${DATASET_DIR}"
+echo "Analysis:   ${DATASET_SUMMARY_FILE}"

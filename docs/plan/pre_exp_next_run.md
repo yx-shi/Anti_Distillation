@@ -68,23 +68,24 @@
 
 ## Recommended Main Settings
 
-建议下一次正式数据侧/训练实验从以下参数开始：
+建议下一次正式数据侧实验从以下参数开始：
 
 ```bash
-NUM_CANDIDATES=10
+MAX_SAMPLES=8000
+NUM_CANDIDATES=8
 TEMPERATURE=0.9
-TOP_P=0.9
-GEN_MAX_NEW_TOKENS=2048
-SCORE_MAX_LENGTH=6144
-MAX_MODEL_LEN=6144
+TOP_P=0.85
+GEN_MAX_NEW_TOKENS=4096
+SCORE_MAX_LENGTH=8192
+MAX_MODEL_LEN=8192
 ```
 
 理由：
 
-- 保留 `k=10`，提高每题至少一个正确候选的概率。
-- 将 `temperature/top_p` 从 `1.0/0.95` 收回到 `0.9/0.9`，减少过长和错误候选。
-- 将生成长度提高到 2048，缓解 DeepScaleR 推理链截断。
-- Student score 长度同步提高，避免 teacher 能生成但 scorer 又截断。
+- `deepscaler_smoke128_k8_t0.9_p0.85_len4096` 已显示截断率降到 6.6%，且 NLL gap 为正。
+- 保留 smoke 的 `k=8`、`temperature=0.9`、`top_p=0.85`，避免在正式数据侧同时引入新采样变量。
+- `GEN_MAX_NEW_TOKENS=4096` 和 `SCORE_MAX_LENGTH=8192` 已在 smoke 中验证不会造成 scorer 截断。
+- 正式数据侧先扩到 8000 条，只生成、打分、选择和分析；训练阶段等数据 summary 确认后再启动。
 
 ## Required Code/Policy Check Before Training
 

@@ -47,35 +47,43 @@ def extract_final_boxed(text):
     return last_formula, last_pos
 
 
-# 当前预实验 prompt 统一要求最终答案写入 `\boxed{}`。
-# 因此判分侧也只抽取 boxed 答案，避免自然语言/普通公式兜底把中间推导
-# 或非标准最终答案误当作可判分答案。
-extract_fns = [extract_final_boxed]
+def extract_final_answer_marker(text):
+    """提取最后一个 `Final Answer:` 之后的答案片段。"""
+
+    marker = "Final Answer:"
+    pos = text.rfind(marker)
+    if pos < 0:
+        return None, None
+    answer = text[pos + len(marker):].strip()
+    if not answer:
+        return None, None
+    return answer, pos + len(marker)
+
+
+# 当前预实验 prompt 统一要求最终答案写入 `\boxed{}`，因此 boxed 是首选。
+# `Final Answer:` 是实际 Teacher 输出里常见的轻量兜底；不恢复 GSM8K
+# `#### ...`、自然语言或普通公式兜底，避免把中间推导误当作最终答案。
+extract_fns = [extract_final_boxed, extract_final_answer_marker]
 
 
 def extract_final_ans(text):
-    """返回最后一个 `\\boxed{...}` 中的答案文本。"""
-    max_result = None
-    max_pos = -1
+    """优先返回 boxed 答案；缺少 boxed 时回退到 `Final Answer:`。"""
+
     for fn in extract_fns:
         try:
-            result, pos = fn(text)
-            assert result
-            if pos > max_pos:
-                max_result = result
-                max_pos = pos
-        except AssertionError:
-            pass
-        except Exception as e:
+            result, _ = fn(text)
+            if result:
+                return result
+        except Exception:
             print('function {} error'.format(fn.__name__))
             import traceback
             traceback.print_exc()
             continue
-    return max_result
+    return None
             
 
 if __name__ == '__main__':
     # Example usage
-    text = r"### ✅ Final Answer:\n\n$$\n\\boxed{4}\n$$\n\nThere are **4** positive integers $ b $ such that $ \\log_b 729 $ is a positive integer."
+    text = r"Final Answer:\n\n$$\n\\boxed{262144}"
     result = extract_final_ans(text)
-    print(f"The last boxed formula is: {result}")
+    print(f"The extracted answer is: {result}")
