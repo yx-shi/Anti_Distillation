@@ -49,7 +49,7 @@ def build_selection_record(
 ) -> dict[str, Any]:
     """把被选中的候选转换成后续构建 distill JSONL 所需的结构。"""
 
-    completion_text = str(selected.get("candidate_text_clean") or selected.get("candidate_text") or "").strip()
+    completion_text = str(selected.get("candidate_text") or "").strip()
     return {
         "sample_id": selected["sample_id"],
         "question": selected["question"],

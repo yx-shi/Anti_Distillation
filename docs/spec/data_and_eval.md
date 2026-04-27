@@ -21,9 +21,9 @@ DeepScaleR 字段：
 ## Grading
 
 - 本项目主要使用 `grading/` 中的答案抽取与数学等价判分。
-- 候选答案先由 `grading.extract_ans.extract_final_ans` 抽取最终答案。
+- 候选答案先由 `grading.extract_ans.extract_final_ans` 抽取最终答案；当前实现只接受最后一个 `\boxed{...}`。
 - 再由 `grading.grader.grade_answer` 与 gold answer 比较。
-- 对数学数据，prompt 统一要求模型把最终答案放入 `\boxed{}`，以提升抽取稳定性。
+- 对数学数据，prompt 统一要求模型把最终答案放入 `\boxed{}`。不再使用 GSM8K `#### ...`、自然语言或普通公式兜底抽取。
 
 ## Candidate Quality Fields
 

@@ -22,7 +22,6 @@ from grading.grader import grade_answer
 from pre_exp.common import read_jsonl, write_jsonl
 from sft.data import SupervisedFineTuningCollator
 from sft.prompting import normalize_completion_text
-from sft.rollout_eval import truncate_to_first_gsm8k_answer
 
 
 DEFAULT_STUDENT_MODEL = "/data1/public_checkpoints/Qwen3-1.7B"
@@ -60,7 +59,7 @@ def build_scoring_feature(record: dict[str, Any], tokenizer, max_length: int) ->
         add_special_tokens=False,
     )["input_ids"]
     completion_ids = tokenizer(
-        record["candidate_text_clean"],
+        record["candidate_text"],
         add_special_tokens=False,
     )["input_ids"]
     full_ids = prompt_ids + completion_ids
@@ -150,8 +149,7 @@ def main() -> None:
 
     for record_idx, record in enumerate(raw_records):
         candidate_text_raw = normalize_completion_text(str(record.get("candidate_text", "")))
-        candidate_text_clean = truncate_to_first_gsm8k_answer(candidate_text_raw)
-        extracted_answer = extract_final_ans(candidate_text_clean) if candidate_text_clean else None
+        extracted_answer = extract_final_ans(candidate_text_raw) if candidate_text_raw else None
 
         finish_reason = str(record.get("finish_reason") or "")
         stop_reason = str(record.get("stop_reason") or "")
@@ -173,7 +171,7 @@ def main() -> None:
         enriched_record = dict(record)
         enriched_record.update(
             {
-                "candidate_text_clean": candidate_text_clean,
+                "candidate_text": candidate_text_raw,
                 "extracted_answer": extracted_answer,
                 "is_empty": is_empty,
                 "is_generation_truncated": is_generation_truncated,

@@ -472,12 +472,12 @@ result/pre_exp/
 
 说明：
 
-- 过滤策略过弱
+- 完整 Teacher 分布蒸馏口径下，selection 不按正误过滤
 - Student NLL 排序压过了任务质量约束
 
 优先动作：
 
-- 先加强 extractable / correctness filter
+- 同时报告 selected-candidate correctness / truncation，必要时调整 Teacher 生成参数或单独设计质量约束实验
 
 #### 失败信号 3：baseline 与 adversarial 几乎没有差异
 
@@ -514,7 +514,7 @@ result/pre_exp/
 
 1. 实现统一的 Qwen3 prompt helper，并设计 `candidate_pool.jsonl` / `distill_*.jsonl` schema
 2. 用 vLLM 在 smoke 子集上生成候选并人工抽查
-3. 接入 `grading` 完成 extractable + correctness 过滤
+3. 接入 `grading` 完成 boxed-answer extractable + correctness 标注
 4. 实现 Student completion-token mean NLL 打分
 5. 产出两组蒸馏 JSONL
 6. 扩展 `src/sft` 数据接口，使其能读取 `distill_jsonl`

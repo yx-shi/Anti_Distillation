@@ -142,13 +142,12 @@ def generate_model_output(args: argparse.Namespace, question: str) -> str:
 
 def main() -> None:
     args = build_arg_parser().parse_args()
-    from sft.rollout_eval import load_grading_functions, truncate_to_first_gsm8k_answer
+    from sft.rollout_eval import load_grading_functions
 
     extract_final_ans, grade_answer = load_grading_functions()
 
     question, gold_answer_raw, gold_answer_final = load_sample_from_args(args)
     model_output = generate_model_output(args, question)
-    model_output = truncate_to_first_gsm8k_answer(model_output)
 
     predicted_answer = extract_final_ans(model_output)
     is_correct = False

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import math
-import re
 import sys
 from pathlib import Path
 from typing import Any, Callable
@@ -81,24 +80,6 @@ def extract_gsm8k_final_answer(answer_text: str) -> str:
     return text
 
 
-def truncate_to_first_gsm8k_answer(text: str) -> str:
-    """Trim generated text at the first complete `#### answer` line when present.
-
-    这一步主要是为了解决两个工程问题：
-    1. 我们在 FSDP 下为了保证各 rank forward 次数一致，生成时不会因为 EOS 提前停下
-    2. 因此模型可能在写出正确答案后继续重复若干行 `#### 540`
-
-    对 GSM8K 这种任务来说，第一次完整出现的 `#### ...` 已经足够代表最终答案。
-    把后面的重复尾巴裁掉，日志会更干净，评分也更稳。
-    """
-
-    stripped = text.strip()
-    match = re.search(r"####\s*[^\n\r]+", stripped)
-    if match is None:
-        return stripped
-    return stripped[: match.end()].strip()
-
-
 def build_rollout_eval_samples(
     tokenizer,
     eval_source_dataset: Any,
@@ -145,7 +126,7 @@ def grade_rollout_predictions(
     correct = 0
 
     for sample, generated_text in zip(samples, generated_texts):
-        completion = truncate_to_first_gsm8k_answer(generated_text)
+        completion = generated_text.strip()
         predicted_answer = extract_final_ans(completion)
         is_correct = predicted_answer is not None and grade_answer(predicted_answer, sample["gold_answer"])
         correct += int(is_correct)
@@ -155,7 +136,6 @@ def grade_rollout_predictions(
                 "question": sample["question"],
                 "gold_answer": sample["gold_answer"],
                 "generated_text": generated_text,
-                "generated_text_truncated": completion,
                 "predicted_answer": predicted_answer,
                 "is_correct": bool(is_correct),
             }
@@ -226,7 +206,6 @@ def generate_eval_preview(
         question=EVAL_PREVIEW_QUESTION,
         max_new_tokens=max_new_tokens,
     )
-    completion = truncate_to_first_gsm8k_answer(completion)
     return {
         "question": EVAL_PREVIEW_QUESTION,
         "completion": completion,
@@ -291,7 +270,6 @@ def evaluate_rollout_accuracy(
         )
 
         if has_real_sample:
-            model_output = truncate_to_first_gsm8k_answer(model_output)
             predicted_answer = extract_final_ans(model_output)
             is_correct = predicted_answer is not None and grade_answer(predicted_answer, gold_answer)
             local_correct += int(is_correct)
