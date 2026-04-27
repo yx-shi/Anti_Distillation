@@ -54,7 +54,9 @@ RESULT_ROOT="result/pre_exp"
 CANDIDATE_DIR="${RESULT_ROOT}/candidates/${EXPERIMENT_NAME}"
 DATASET_DIR="${RESULT_ROOT}/datasets/${EXPERIMENT_NAME}"
 SELECTION_DIR="${DATASET_DIR}/selections"
-RUN_DIR="${RESULT_ROOT}/runs/${EXPERIMENT_NAME}"
+# 训练产物（中间 checkpoint / final checkpoint / train.log）显著更占空间，
+# 这里单独放到 /home/disk2/shiyixuan，避免把仓库所在磁盘写满。
+RUN_DIR="/home/disk2/shiyixuan/pre_exp_runs/${EXPERIMENT_NAME}"
 ANALYSIS_DIR="${RESULT_ROOT}/analysis/${EXPERIMENT_NAME}"
 LOG_DIR="${ANALYSIS_DIR}/logs"
 
@@ -120,14 +122,17 @@ TRAIN_GPU_IDS="1,2,3,4,5,6,7"
 TRAIN_NPROC=7
 
 # max_steps 现在是训练预算的一等公民。
-# 128 样本 smoke 下，100 step 大概是 12.5 个 epoch，足够看趋势，但不会像 1000 step 那么夸张。
-MAX_STEPS=100
-EVAL_EVERY=25
-CHECKPOINT_EVERY=50
-MAX_CHECKPOINTS_TO_KEEP=3
+# 当前 5000 条训练样本、7 卡、per-device batch size=2 时，
+# global batch size = 7 * 2 = 14；
+# 因此 1000 step 大约对应 5000 / 14 ≈ 357 step/epoch，也就是约 2.8 个 epoch。
+# 这个预算足够拉开 baseline / adversarial 的学习曲线，又不会把训练拖得过长。
+MAX_STEPS=1000
+EVAL_EVERY=200
+CHECKPOINT_EVERY=200
+MAX_CHECKPOINTS_TO_KEEP=5
 
-# 当前 smoke 数据 full length 长尾到 634 左右，所以 640 可以避免训练侧截断。
-TRAIN_MAX_LENGTH=640
+# main5000 数据里 completion 更长一些，因此把训练长度稍微放宽到 700。
+TRAIN_MAX_LENGTH=700
 
 # rollout token 上限用于离线评测，不再在 trainer 里做阻塞式 rollout。
 ROLLOUT_MAX_NEW_TOKENS=512
@@ -165,14 +170,14 @@ FINAL_EVAL_MAX_SAMPLES=0
 # 这些开关方便你重跑局部阶段。
 # 例如只想重跑最终评测，可以把前面都改成 0，只保留 RUN_FINAL_EVAL=1。
 RUN_TEACHER_GENERATE=0
-RUN_STUDENT_SCORE=1
-RUN_SELECT_AND_BUILD=1
-RUN_ANALYZE_DATASET=1
-RUN_TRAIN=0
+RUN_STUDENT_SCORE=0
+RUN_SELECT_AND_BUILD=0
+RUN_ANALYZE_DATASET=0
+RUN_TRAIN=1
 
 # checkpoint 子集评测不是必须，但对看学习曲线很有帮助。
 RUN_CHECKPOINT_EVAL=0
-RUN_FINAL_EVAL=0
+RUN_FINAL_EVAL=1
 
 
 ###############################################################################
