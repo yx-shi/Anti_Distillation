@@ -30,7 +30,7 @@ SPLIT="train"
 QUESTION_FIELD="problem"
 ANSWER_FIELD="answer"
 
-EXPERIMENT_NAME="deepscaler_smoke256_k10_t1.0_p0.95_len1024"
+EXPERIMENT_NAME="deepscaler_smoke128_k8_t0.9_p0.85_len4096"
 RESULT_ROOT="result/pre_exp"
 CANDIDATE_DIR="${RESULT_ROOT}/candidates/${EXPERIMENT_NAME}"
 DATASET_DIR="${RESULT_ROOT}/datasets/${EXPERIMENT_NAME}"
@@ -40,18 +40,18 @@ LOG_DIR="${ANALYSIS_DIR}/logs"
 
 mkdir -p "${CANDIDATE_DIR}" "${DATASET_DIR}" "${SELECTION_DIR}" "${ANALYSIS_DIR}" "${LOG_DIR}"
 
-MAX_SAMPLES=256
+MAX_SAMPLES=128
 SUBSET_SEED=42
 
 # 这轮故意把采样随机性调高一点，增加候选之间的差异：
 # - temperature 控制 logits softmax 前的缩放，值越大分布越平，低概率 token 更容易被采到。
 # - top_p 是 nucleus sampling，保留累计概率达到 p 的最小 token 集合；0.95 比 0.8 更开放。
-NUM_CANDIDATES=10
-TEMPERATURE=1.0
-TOP_P=0.95
+NUM_CANDIDATES=8
+TEMPERATURE=0.9
+TOP_P=0.85
 
 # DeepScaleR 的推理链通常比 GSM8K 长，先从 1024 开始看 finish_reason=length 的比例。
-GEN_MAX_NEW_TOKENS=1024
+GEN_MAX_NEW_TOKENS=4096
 GEN_PROMPT_BATCH_SIZE=32
 GEN_MAX_NUM_SEQS=128
 SAVE_EVERY_PROMPTS=32
@@ -64,7 +64,7 @@ TEACHER_TP_SIZE=8
 SCORE_VISIBLE_DEVICES="0"
 SCORE_DEVICE="cuda:0"
 SCORE_BATCH_SIZE=2
-SCORE_MAX_LENGTH=4096
+SCORE_MAX_LENGTH=8192
 
 CANDIDATE_POOL_FILE="${CANDIDATE_DIR}/candidate_pool.jsonl"
 SCORED_CANDIDATES_FILE="${CANDIDATE_DIR}/scored_candidates.jsonl"

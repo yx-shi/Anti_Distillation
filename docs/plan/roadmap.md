@@ -16,15 +16,17 @@
 - 完成 response-level anti-distillation 预实验框架。
 - 完成 GSM8K 预实验并发现任务偏简单。
 - 完成 DeepScaleR 256-sample data-only smoke，确认数据更难，但 1024 生成长度不足。
+- 完成 vLLM-dual hard/soft token-level adversarial decoding 首版，并通过 hard、soft、普通 vLLM 三类 smoke。
 
 ## Current Phase
 
 1. 用 DeepScaleR 重跑更高质量的 response-level 预实验。
 2. 根据数据质量与训练结果判断 response-level 方法是否有可观测 anti-distillation 信号。
-3. 并行推进 vLLM-dual，为 token-level hard/soft adversarial decoding 做准备。
+3. 将 vLLM-dual hard/soft decoding 接入现有 `src/pre_exp/` 框架，跑完整 smoke：生成、质量分析、SFT、小规模 eval。
 
 ## Next Decisions
 
 - DeepScaleR 主实验的样本规模、生成长度和采样参数。
 - selection policy 是否严格排除截断候选。
-- vLLM-dual 的 hard/soft decoding 接口与配置格式。
+- vLLM-dual full smoke 的最小数据规模、Teacher/Student 组合、输出 schema 和训练预算。
+- token-level hard/soft 结果如何与 response-level baseline/adversarial 结果做可比分析。

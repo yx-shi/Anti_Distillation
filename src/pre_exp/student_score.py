@@ -160,11 +160,14 @@ def main() -> None:
         is_extractable = extracted_answer is not None
         is_correct = is_extractable and grade_answer(extracted_answer, str(record["gold_answer"]))
 
-        # “valid candidate” 对应的是：
+        # “valid candidate” 仍然只作为候选质量分析字段：
         # - 不是空输出
         # - 不是因为长度被截断
         # - 能抽出最终答案
-        # 这里不强制要求答案正确，因为 baseline fallback 仍需要在“有效但不正确”的候选里选一个。
+        #
+        # NLL 打分不再只服务“正确/有效候选重排”，而是服务完整 Teacher
+        # 分布蒸馏。因此只要 Teacher completion 非空，就计算 Student NLL；
+        # 正误、截断、可抽取性都保留下来做分析，不参与是否打分。
         is_valid_candidate = (not is_empty) and (not is_generation_truncated) and is_extractable
 
         enriched_record = dict(record)
@@ -184,7 +187,7 @@ def main() -> None:
         )
         scored_records.append(enriched_record)
 
-        if is_valid_candidate:
+        if not is_empty:
             feature, score_truncated = build_scoring_feature(enriched_record, tokenizer, args.max_length)
             enriched_record["score_truncated"] = score_truncated
             scoreable_entries.append((record_idx, feature))

@@ -26,6 +26,46 @@
 
 结论：DeepScaleR 比 GSM8K 更适合后续实验，但 `max_new_tokens=1024` 截断过重，不适合直接进入训练。
 
+## Smoke128 Len4096 Result Summary
+
+2026-04-28 运行了新的 data-only smoke：
+
+- experiment：`deepscaler_smoke128_k8_t0.9_p0.85_len4096`
+- samples：128
+- candidates per sample：8
+- temperature：0.9
+- top_p：0.85
+- max_new_tokens：4096
+- score_max_length / max_model_len：8192
+
+核心观察：
+
+- 候选总数：1024
+- empty candidate rate：0.0%
+- extractable candidate rate：100.0%
+- valid candidate rate：93.4%
+- candidate-level correct rate：36.2%
+- generation truncated rate：6.6%
+- 至少 1 个 valid candidate 的题目：128/128
+- 至少 1 个正确候选的题目：82/128
+- 至少 1 个 valid 且正确候选的题目：82/128
+- 有任一截断候选的题目：29/128
+- 8 个候选全被截断的题目：0/128
+
+在完整 Teacher 分布 selection policy 下：
+
+- baseline selected correct rate：39.1%
+- adversarial selected correct rate：25.8%
+- baseline selected truncated rate：3.9%
+- adversarial selected truncated rate：6.2%
+- baseline/adversarial 选中不同候选的样本占比：91.4%
+- 平均 NLL gap：0.0946
+- baseline 平均 completion token 数：1084.4
+- adversarial 平均 completion token 数：814.6
+- Student score 阶段 `score_truncated`：0/1024
+
+结论：`max_new_tokens=4096` 基本解决了上一轮 smoke 的严重截断问题，且 adversarial selection 能稳定选到与 baseline 不同、Student NLL 更高的候选。需要注意的是，在完整 Teacher 分布蒸馏口径下，adversarial 选中样本正确率低于 baseline，后续训练曲线差异必须结合 selected-candidate correctness / truncation 一起解释。
+
 ## Recommended Main Settings
 
 建议下一次正式数据侧/训练实验从以下参数开始：
@@ -48,14 +88,14 @@ MAX_MODEL_LEN=6144
 
 ## Required Code/Policy Check Before Training
 
-- selection policy 应严格优先选择“未截断且正确”的候选。
-- `is_correct` 不能单独代表可训练质量，因为少量截断候选也可能提前写出正确答案。
-- 数据分析应报告 candidate-level、sample-level、usable-correct 和 fallback 指标。
-- 如果 fallback 仍接近或超过 40%，不建议直接进入主训练。
+- selection policy 已从“正确且未截断候选内重排”改为“完整 Teacher 分布蒸馏”：baseline 选第一条 Teacher 候选，adversarial 选 Student NLL 最大候选。
+- `is_correct`、`is_valid_candidate`、截断状态仍需报告，但只作为解释变量，不作为 selection filter。
+- 数据分析应报告 candidate-level、sample-level、valid/correct、截断率、selected-candidate 正确率和 NLL gap。
+- 如果截断率仍过高，训练结论需要谨慎解释，因为 Student 学到的是 Teacher 的完整输出分布，其中包含截断与错误样本。
 
 ## Success Criteria For Main Data
 
 - 截断候选比例显著低于 smoke。
-- 至少 1 个未截断且正确候选的题目比例足够高。
 - baseline/adversarial 的 NLL gap 保持正值，且两组选中不同候选的样本占比不太低。
 - baseline/adversarial 的长度分布接近，避免 adversarial 差异主要由长度解释。
+- 两组选中样本的正确率、截断率差异可解释，避免把训练差异误读为纯 anti-distillation 信号。

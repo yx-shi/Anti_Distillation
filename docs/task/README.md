@@ -40,3 +40,13 @@
 ## Agent Rule
 
 主 agent 可以读多个 task 做调度；子 agent 只读被分配 task 的 Required Reading，不默认全量读取 `docs/`。
+
+## Active Tasks
+
+- `pre_exp_deepscaler_main.md`：DeepScaleR response-level 主实验。
+- `vllm_dual_full_smoke_pipeline.md`：vLLM-dual hard/soft token-level decoding 接入现有 pre-exp 框架并跑完整 smoke。
+- `documentation_maintenance.md`：长任务结束后的文档维护。
+
+## Archive
+
+已完成或失效的任务卡放在 `archive/`。新 agent 默认不要读取 archive，除非 active task 或 plan 明确要求追溯历史。

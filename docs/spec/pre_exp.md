@@ -41,7 +41,7 @@ GSM8K 预实验显示任务偏简单，后续实验转向 `agentica-org/DeepScal
 - `top_p=0.9`
 - `max_new_tokens=2048`
 - `max_model_len=6144`
-- selection policy 严格排除截断候选，再在正确候选中做 baseline/adversarial 选择
+- selection policy 已切换为完整 Teacher 分布蒸馏：baseline 选 Teacher 第一条候选，adversarial 选 Student NLL 最大候选，不按 Teacher 正误或候选有效性过滤
 
 256-sample smoke 的详细结论见 `../plan/pre_exp_next_run.md`。
 
@@ -126,24 +126,22 @@ Teacher 候选生成阶段固定使用：
 - `enable_thinking=False`
 - prompt 中追加 `Please reason step by step, and put your final answer within \boxed{}.`，以提高数学题最终答案格式的一致性
 
-### 阶段 B：候选质量过滤
+### 阶段 B：候选质量标注
 
-对每个候选回答执行如下过滤：
+对每个候选回答执行如下质量标注：
 
-1. 去掉空输出。
-2. 去掉明显截断、无法解析最终答案、或不满足基本格式要求的输出。
-3. 使用现有 `grading` 管线提取最终 GSM8K 答案。
-4. 只保留最终答案判分为正确的候选。
+1. 标记空输出。
+2. 标记是否因为长度上限截断。
+3. 使用现有 `grading` 管线尝试提取最终答案。
+4. 使用 gold answer 标记 `is_correct`。
 
-如果某个 prompt 没有任何正确候选，则两组蒸馏数据统一回退到同一条 deterministic baseline 样本，并写入：
+这些字段只用于数据分析和实验解释，不再作为 selection filter。当前 response-level 实验的目标是让 Student 学 Teacher 的完整采样分布，而不是只学 Teacher 正确且格式良好的子分布。
 
-- `fallback_reason=no_correct_candidate`
-
-这样做的目的，是保证两组数据在样本覆盖和训练规模上仍然对齐，避免因为跳题导致额外变量进入实验。
+只有当同一题所有候选都没有可计算 NLL 的非空 completion 时，`teacher_adversarial` 才回退到 baseline 并写入 `fallback_reason=no_scoreable_candidate`。
 
 ### 阶段 C：Student 打分
 
-对通过过滤的候选，使用 Student 基座模型计算：
+对所有非空 Teacher completion，使用 Student 基座模型计算：
 
 - `student_mean_nll`
 - `student_token_count`
@@ -165,7 +163,7 @@ Student 打分使用 `transformers + torch`，不使用 vLLM。原因是：
 
 ### 阶段 D：蒸馏数据构建
 
-所有训练组共享同一个候选池和同一套过滤结果，只允许**候选选择规则**不同。
+所有训练组共享同一个候选池和同一套质量标注，只允许**候选选择规则**不同。
 
 本轮正式必做的训练组固定为两组：
 
@@ -180,17 +178,18 @@ Student 打分使用 `transformers + torch`，不使用 vLLM。原因是：
 
 #### `teacher_baseline`
 
-- 在正确候选里按生成顺序选择第一个
-- 如果没有正确候选，则回退到第一个有效候选
+- 始终选择 Teacher 采样返回的第一条候选，即最小 `candidate_id`
+- 不考虑该候选是否正确、是否截断、是否可抽取答案
 
 #### `teacher_adversarial`
 
-- 在正确候选里选择 `student_mean_nll` **最高**的那个
-- 如果没有正确候选，则回退到 `teacher_baseline`
+- 在所有可计算 NLL 的 Teacher 候选中选择 `student_mean_nll` **最高**的那个
+- 不考虑该候选是否正确、是否截断、是否可抽取答案
+- 如果所有候选都无法计算 NLL，则回退到 `teacher_baseline`
 
 这样定义后，`teacher_adversarial` 和 `teacher_baseline` 的核心差异就只剩：
 
-> 给定同一批 Teacher 正确候选，是否故意选 Student 最难拟合的那一个。
+> 给定同一批 Teacher 原始采样候选，是否故意选 Student 最难拟合的那一个。
 
 ## 6. 数据规模与运行分层
 
@@ -244,7 +243,7 @@ src/pre_exp/
 ### `student_score.py`
 
 - 读取 `candidate_pool.jsonl`
-- 对可用候选计算 completion token 平均 NLL
+- 对所有非空候选计算 completion token 平均 NLL
 - 输出 `scored_candidates.jsonl`
 
 ### `select_candidates.py`
@@ -260,7 +259,7 @@ src/pre_exp/
 ### `analyze_dataset.py`
 
 - 做数据统计和 sanity check
-- 输出候选正确率、fallback 占比、长度分布、NLL gap 等分析结果
+- 输出候选正确率、可用率、长度分布、NLL gap 等分析结果
 
 ### `final_eval.py`
 
@@ -289,7 +288,7 @@ src/pre_exp/
 
 - `messages` 保存 chat template 的结构化输入，便于后续复现 prompt 构造。
 - `prompt_text` 保存最终渲染后的文本，便于人工抽查和跨框架调试。
-- `fallback_reason` 在候选阶段可以先留空，但字段要预留，避免后续 schema 反复变动。
+- selection 阶段通常不写 fallback；只有 adversarial 遇到无可打分候选时才写 `no_scoreable_candidate`。
 
 ### 8.2 `scored_candidates.jsonl`
 
@@ -310,6 +309,8 @@ src/pre_exp/
 - `selected_candidate_id`
 - `teacher_candidate_count`
 - `teacher_answer_correct`
+- `teacher_candidate_valid`
+- `teacher_generation_truncated`
 - `student_mean_nll`
 - `fallback_reason`
 
@@ -435,7 +436,7 @@ result/pre_exp/
 在开始训练前，至少要跑完以下统计：
 
 1. 候选正确率
-2. fallback 样本占比
+2. 候选有效率、截断率、正确率
 3. 两组选中 response 的长度分布
 4. `teacher_baseline` 与 `teacher_adversarial` 之间的平均 `student_mean_nll` 差值
 

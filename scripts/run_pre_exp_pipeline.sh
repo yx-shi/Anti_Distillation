@@ -72,12 +72,10 @@ SUBSET_SEED=42
 
 # Teacher 每题采 8 个候选，这是当前 response-level 预实验的核心设置。
 NUM_CANDIDATES=8
-TEMPERATURE=0.7
+TEMPERATURE=0.8
 TOP_P=0.8
 
-# 这里保留 512，而不是 256：
-# 数学题推理链较长，太小容易在最终答案出现前被截断。
-GEN_MAX_NEW_TOKENS=512
+GEN_MAX_NEW_TOKENS=4096
 
 # prompt_batch_size 控制一次送进 vLLM 的 prompt 数。
 # 这次把它调到 64，而不是更激进的 256：
@@ -111,7 +109,7 @@ SAVE_EVERY_PROMPTS=64
 SCORE_VISIBLE_DEVICES="5"
 SCORE_DEVICE="cuda:0"
 SCORE_BATCH_SIZE=4
-SCORE_MAX_LENGTH=2048
+SCORE_MAX_LENGTH=8192
 
 
 ###############################################################################

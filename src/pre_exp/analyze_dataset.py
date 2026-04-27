@@ -50,6 +50,12 @@ def fallback_rate(records: list[dict[str, Any]]) -> float:
     return fallback_count / len(records)
 
 
+def boolean_rate(records: list[dict[str, Any]], key: str) -> float:
+    if not records:
+        return 0.0
+    return sum(1 for item in records if item.get(key, False)) / len(records)
+
+
 def main() -> None:
     args = build_arg_parser().parse_args()
 
@@ -65,10 +71,13 @@ def main() -> None:
     adversarial_by_sample = {int(item["sample_id"]): item for item in adversarial_records}
 
     nll_gaps: list[float] = []
+    different_candidate_count = 0
     for sample_id, baseline_record in baseline_by_sample.items():
         adversarial_record = adversarial_by_sample.get(sample_id)
         if adversarial_record is None:
             continue
+        if baseline_record.get("selected_candidate_id") != adversarial_record.get("selected_candidate_id"):
+            different_candidate_count += 1
         baseline_nll = baseline_record.get("student_mean_nll")
         adversarial_nll = adversarial_record.get("student_mean_nll")
         if baseline_nll is None or adversarial_nll is None:
@@ -78,24 +87,42 @@ def main() -> None:
     summary = {
         "candidate_pool": {
             "total_candidates": total_candidates,
+            "empty_candidate_rate": boolean_rate(scored_records, "is_empty"),
+            "generation_truncated_rate": boolean_rate(scored_records, "is_generation_truncated"),
+            "extractable_candidate_rate": boolean_rate(scored_records, "is_extractable"),
             "valid_candidate_rate": (len(valid_candidates) / total_candidates) if total_candidates else 0.0,
             "correct_candidate_rate": (len(correct_candidates) / total_candidates) if total_candidates else 0.0,
         },
         "selection_modes": {
             "teacher_baseline": {
                 "fallback_rate": fallback_rate(baseline_records),
+                "selected_correct_rate": boolean_rate(baseline_records, "teacher_answer_correct"),
+                "selected_valid_rate": boolean_rate(baseline_records, "teacher_candidate_valid"),
+                "selected_generation_truncated_rate": boolean_rate(
+                    baseline_records,
+                    "teacher_generation_truncated",
+                ),
                 "completion_token_count": summarize_numeric(
                     [float(item.get("student_token_count", 0)) for item in baseline_records]
                 ),
             },
             "teacher_adversarial": {
                 "fallback_rate": fallback_rate(adversarial_records),
+                "selected_correct_rate": boolean_rate(adversarial_records, "teacher_answer_correct"),
+                "selected_valid_rate": boolean_rate(adversarial_records, "teacher_candidate_valid"),
+                "selected_generation_truncated_rate": boolean_rate(
+                    adversarial_records,
+                    "teacher_generation_truncated",
+                ),
                 "completion_token_count": summarize_numeric(
                     [float(item.get("student_token_count", 0)) for item in adversarial_records]
                 ),
             },
         },
         "baseline_vs_adversarial": {
+            "different_selected_candidate_rate": (
+                different_candidate_count / len(baseline_by_sample) if baseline_by_sample else 0.0
+            ),
             "avg_student_mean_nll_gap": summarize_numeric(nll_gaps),
         },
     }

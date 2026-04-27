@@ -32,31 +32,12 @@ def sort_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(candidates, key=lambda item: int(item.get("candidate_id", 0)))
 
 
-def first_valid_candidate(candidates: list[dict[str, Any]]) -> dict[str, Any]:
-    valid_candidates = [item for item in candidates if item.get("is_valid_candidate", False)]
-    if not valid_candidates:
-        raise ValueError("No valid candidate is available for this sample.")
-    return sort_candidates(valid_candidates)[0]
+def first_teacher_candidate(candidates: list[dict[str, Any]]) -> dict[str, Any]:
+    """选择 Teacher 采样返回的第一条候选，不按质量字段过滤。"""
 
-
-def first_nonempty_candidate(candidates: list[dict[str, Any]]) -> dict[str, Any]:
-    """在所有候选里退化选择“第一个非空回答”。
-
-    128 条真实 smoke 数据里会遇到一种情况：
-    - teacher 给出的回答看起来是合理的完整自然语言
-    - 但没有落成当前 extractor 能识别的 `#### ...` / boxed / formula 形式
-    - 于是它既不是 `is_valid_candidate`，也不是 `is_correct`
-
-    如果这时直接报错，整条 smoke pipeline 会被少数格式问题卡死。
-    因此这里提供一个更保守的兜底：
-    至少保留“第一个非空候选”，让训练链路继续跑，同时通过 fallback_reason
-    明确记录这是一条低置信度样本。
-    """
-
-    nonempty_candidates = [item for item in candidates if not item.get("is_empty", False)]
-    if not nonempty_candidates:
-        raise ValueError("No non-empty candidate is available for this sample.")
-    return sort_candidates(nonempty_candidates)[0]
+    if not candidates:
+        raise ValueError("No candidate is available for this sample.")
+    return sort_candidates(candidates)[0]
 
 
 def build_selection_record(
@@ -78,6 +59,8 @@ def build_selection_record(
         "selected_candidate_id": selected["candidate_id"],
         "teacher_candidate_count": teacher_candidate_count,
         "teacher_answer_correct": bool(selected.get("is_correct", False)),
+        "teacher_candidate_valid": bool(selected.get("is_valid_candidate", False)),
+        "teacher_generation_truncated": bool(selected.get("is_generation_truncated", False)),
         "student_mean_nll": selected.get("student_mean_nll"),
         "student_token_count": int(selected.get("student_token_count", 0)),
         "fallback_reason": fallback_reason,
@@ -85,16 +68,17 @@ def build_selection_record(
 
 
 def choose_adversarial(candidates: list[dict[str, Any]]) -> dict[str, Any]:
-    correct_candidates = [item for item in candidates if item.get("is_correct", False)]
-    if not correct_candidates:
-        raise ValueError("No correct candidate is available for adversarial selection.")
+    scoreable_candidates = [item for item in candidates if item.get("student_mean_nll") is not None]
+    if not scoreable_candidates:
+        raise ValueError("No scoreable candidate is available for adversarial selection.")
 
-    # 这里优先选择 student_mean_nll 最大的正确候选。
+    # 完整 Teacher 分布蒸馏口径：不按正误、截断或可抽取性过滤，只选择
+    # Student completion-token mean NLL 最大的 Teacher 样本。
     # 如果 NLL 并列，再按 candidate_id 升序打破平局，保证结果可复现。
     return max(
-        correct_candidates,
+        scoreable_candidates,
         key=lambda item: (
-            float(item.get("student_mean_nll") if item.get("student_mean_nll") is not None else float("-inf")),
+            float(item["student_mean_nll"]),
             -int(item.get("candidate_id", 0)),
         ),
     )
@@ -115,33 +99,24 @@ def main() -> None:
         candidates = sort_candidates(grouped_candidates[sample_id])
         teacher_candidate_count = len(candidates)
 
-        baseline_fallback_reason = ""
-        correct_candidates = [item for item in candidates if item.get("is_correct", False)]
-        if correct_candidates:
-            baseline_selected = correct_candidates[0]
-        else:
-            try:
-                baseline_selected = first_valid_candidate(candidates)
-                baseline_fallback_reason = "no_correct_candidate"
-            except ValueError:
-                baseline_selected = first_nonempty_candidate(candidates)
-                baseline_fallback_reason = "no_valid_candidate"
-
+        baseline_selected = first_teacher_candidate(candidates)
         baseline_records.append(
             build_selection_record(
                 baseline_selected,
                 selection_mode="teacher_baseline",
                 teacher_candidate_count=teacher_candidate_count,
-                fallback_reason=baseline_fallback_reason,
+                fallback_reason="",
             )
         )
 
-        if correct_candidates:
+        try:
             adversarial_selected = choose_adversarial(candidates)
             adversarial_fallback_reason = ""
-        else:
+        except ValueError:
+            # 理论上只有所有 Teacher completion 都为空时才会触发。此时没有 NLL
+            # 可比较，退回到第一条 Teacher 样本以保持数据规模对齐。
             adversarial_selected = baseline_selected
-            adversarial_fallback_reason = baseline_fallback_reason or "no_correct_candidate"
+            adversarial_fallback_reason = "no_scoreable_candidate"
 
         adversarial_records.append(
             build_selection_record(

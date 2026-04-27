@@ -38,12 +38,14 @@
 - 已了解 vLLM V0 的关键概念：batch inference、prefill、decoding、scheduler、paged attention、swap 等。
 - 已启动 vLLM-dual 修改方向，重点文件包括 worker、arg_utils 和 config 相关逻辑。
 - 已实现 vLLM-dual hard/soft token-level adversarial decoding 首版：显式 `dual_model_config` 才启用，普通 vLLM 路径保持默认 worker。
+- 已归档 vLLM-dual token-level decoding 实现任务；下一步活跃任务是把 hard/soft 接入现有 `src/pre_exp/` 框架并跑完整 smoke。
 
 ## Current Experimental State
 
 - GSM8K 预实验显示任务偏简单，Student base 正确率较高，蒸馏提升和 adversarial 差异不明显。
 - 已开始切换到 DeepScaleR 数据集方向。
 - 256-sample DeepScaleR data-only smoke 已完成，结论记录在 `plan/pre_exp_next_run.md`。
+- vLLM-dual 当前只完成 worker-level hard/soft smoke，尚未完成 candidate -> dataset -> SFT -> eval 的 full smoke。
 
 ## Maintenance Rule
 

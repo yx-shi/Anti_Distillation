@@ -17,24 +17,26 @@
 
 - `plan/roadmap.md`：项目阶段进度和下一阶段方向。
 - `plan/pre_exp_next_run.md`：DeepScaleR 预实验后续正式运行建议。
-- `plan/vllm_dual_adversarial_decoding.md`：token-level adversarial decoding 的实现路线。
+- `plan/vllm_dual_adversarial_decoding.md`：vLLM-dual hard/soft 完成首版后的 full smoke 接入路线。
 
 ## Tasks: Implementation Lists
 
 - `task/README.md`：任务卡模板和 agent 使用规则。
 - `task/pre_exp_deepscaler_main.md`：DeepScaleR 主实验任务卡。
-- `task/vllm_dual_token_level_decoding.md`：vLLM-dual token-level decoding 任务卡。
+- `task/vllm_dual_full_smoke_pipeline.md`：vLLM-dual hard/soft 接入现有 pre-exp 框架并跑完整 smoke 的任务卡。
 - `task/documentation_maintenance.md`：长任务结束后的文档维护任务卡。
 
 ## Archive
 
 - `archive/Anti_Distillation.pdf`：历史 PDF 材料，默认不需要读取。
+- `plan/archive/`：已完成或被替代的 plan 归档。
+- `task/archive/`：已完成或被替代的 task 归档。
 
 ## Agent Reading Rules
 
 1. 新对话先读 `AGENTS.md` 和本文件。
 2. 做实验相关工作时读 `spec/pre_exp.md`、`spec/data_and_eval.md`，再读对应 task。
-3. 做 vLLM-dual 工作时读 `spec/vllm_dual.md`、相关 plan 和 task。
+3. 做 vLLM-dual 工作时读 `spec/vllm_dual.md`、相关 plan 和 task；不要默认读取 archive，除非需要追溯历史实现。
 4. 做研究方向讨论时读 `anti_distillation.md` 和 `plan/roadmap.md`。
 5. 若任务卡与 spec 冲突，以 spec 为当前事实；若 spec 与代码冲突，以代码为准，并在最终回复中提醒需要更新文档。
 

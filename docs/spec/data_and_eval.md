@@ -37,7 +37,28 @@ DeepScaleR 字段：
 - `student_mean_nll`：Student 对 completion token 的平均 NLL。
 - `student_token_count`：用于 NLL 的 completion token 数。
 
-注意：后续正式实验中，selection policy 应优先使用“正确且未截断”的候选，避免截断候选污染训练数据。
+当前 response-level selection policy 不再使用这些质量字段做过滤。baseline 始终选择 Teacher 第一条候选；adversarial 始终选择可计算 NLL 的候选中 `student_mean_nll` 最大的一条。质量字段保留用于解释 Teacher 分布、截断率、正确率和训练后结果，而不是把训练数据裁成“正确且有效”的子分布。
+
+## Token-Level Decoding Outputs
+
+vLLM-dual hard/soft 接入 full smoke 时，优先复用现有 pre-exp 产物规范，但需要额外记录生成模式维度。
+
+建议模式名：
+
+- `teacher_plain`：普通 vLLM Teacher 生成，不传 `dual_model_config`。
+- `teacher_token_hard`：`dual_model_config.adversarial_mode=hard`。
+- `teacher_token_soft`：`dual_model_config.adversarial_mode=soft`。
+
+token-level full smoke 的 raw generation/candidate 记录应尽量包含：
+
+- `generation_mode`：上述模式名。
+- `dual_model_config`：hard/soft 的关键参数摘要；plain 可为 `null`。
+- `worker_cls` 或等价 marker：用于证明 plain 没走 dual worker、hard/soft 走了 dual worker。
+- `adversarial_mode`：plain 为 `null`，hard/soft 为实际模式。
+- `candidate_text`、`finish_reason`、`is_generation_truncated`：沿用现有候选质量分析字段。
+- `intervention_summary`：如果当前 pipeline 能稳定获得 hard/soft intervention 统计则写入；否则在 run summary 中记录“仅日志可见”。
+
+SFT-ready JSONL 仍应兼容 `src/train_sft.py --dataset-format distill_jsonl`，避免为 token-level smoke 另起训练数据格式。
 
 ## Main Outputs
 
@@ -47,4 +68,4 @@ DeepScaleR 字段：
 - `teacher_adversarial.selected.jsonl`：adversarial 选择结果。
 - `distill_teacher_baseline.jsonl`：可用于 SFT 的 baseline 数据。
 - `distill_teacher_adversarial.jsonl`：可用于 SFT 的 adversarial 数据。
-- `dataset_summary.json`：候选质量、fallback、长度和 NLL gap 统计。
+- `dataset_summary.json`：候选质量、选中样本质量、长度和 NLL gap 统计。
