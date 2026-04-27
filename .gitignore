@@ -22,7 +22,6 @@ venv/
 env/
 
 # Project-local cache / credentials
-AGENTS.md
 /.modelscope/
 docs/vllm-note/
 /vllm_dual/
