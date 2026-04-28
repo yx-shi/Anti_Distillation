@@ -37,6 +37,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--max-length", type=int, default=2048)
     parser.add_argument("--device", default="auto")
+    parser.add_argument(
+        "--attn-implementation",
+        choices=["auto", "eager", "sdpa", "flash_attention_2"],
+        default="auto",
+        help=(
+            "Transformers attention backend. `auto` keeps the library default; "
+            "`flash_attention_2` uses the flash_attn package when supported by the model."
+        ),
+    )
     parser.add_argument("--allow-remote-model-files", action="store_true")
     return parser
 
@@ -129,12 +138,23 @@ def main() -> None:
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "right"
 
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model_name_or_path,
-        torch_dtype="auto",
-        local_files_only=not args.allow_remote_model_files,
-    ).to(device)
+    model_kwargs = {
+        "torch_dtype": "auto",
+        "local_files_only": not args.allow_remote_model_files,
+    }
+    if args.attn_implementation != "auto":
+        model_kwargs["attn_implementation"] = args.attn_implementation
+
+    model = AutoModelForCausalLM.from_pretrained(args.model_name_or_path, **model_kwargs).to(device)
+    model.config.use_cache = False
     model.eval()
+    print(
+        "student_score_model_loaded "
+        f"requested_attn_implementation={args.attn_implementation} "
+        f"actual_attn_implementation={getattr(model.config, '_attn_implementation', 'unknown')} "
+        f"use_cache={model.config.use_cache}",
+        flush=True,
+    )
 
     collator = SupervisedFineTuningCollator(
         tokenizer=tokenizer,
@@ -201,6 +221,7 @@ def main() -> None:
             outputs = model(
                 input_ids=batch["input_ids"],
                 attention_mask=batch["attention_mask"],
+                use_cache=False,
             )
             mean_losses, token_counts = compute_batch_mean_completion_nll(
                 logits=outputs.logits,

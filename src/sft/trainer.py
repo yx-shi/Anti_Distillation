@@ -113,12 +113,15 @@ def build_model(config: TrainConfig, runtime: DistributedContext, pad_token_id: 
     if getattr(model_config, "tie_word_embeddings", False):
         model_config.tie_word_embeddings = False
 
-    model = AutoModelForCausalLM.from_pretrained(
-        config.model_name_or_path,
-        config=model_config,
-        torch_dtype="auto",
-        local_files_only=config.local_files_only,
-    )
+    model_kwargs = {
+        "config": model_config,
+        "torch_dtype": "auto",
+        "local_files_only": config.local_files_only,
+    }
+    if config.attn_implementation != "auto":
+        model_kwargs["attn_implementation"] = config.attn_implementation
+
+    model = AutoModelForCausalLM.from_pretrained(config.model_name_or_path, **model_kwargs)
     if pad_token_id is not None:
         model.config.pad_token_id = pad_token_id
     elif model.config.pad_token_id is None:
@@ -370,9 +373,11 @@ def evaluate(
 
     for batch in dataloader:
         batch = move_batch_to_device(batch, runtime.device)
+        # 整段 NLL 前向不需要 generation cache；显式关闭可兼容右 padding + FlashAttention2。
         outputs = model(
             input_ids=batch["input_ids"],
             attention_mask=batch["attention_mask"],
+            use_cache=False,
         )
         loss = compute_causal_lm_loss(outputs.logits, batch["labels"], config.ignore_index)
         total_loss += loss.item()
@@ -433,6 +438,8 @@ def train(config: TrainConfig) -> None:
             f"dataset_name={dataset_label} "
             f"rollout_eval={config.rollout_eval} "
             f"rollout_eval_max_samples={config.rollout_eval_max_samples} "
+            f"requested_attn_implementation={config.attn_implementation} "
+            f"actual_attn_implementation={getattr(model.config, '_attn_implementation', 'unknown')} "
             f"output_dir={config.output_dir} "
             f"train_steps_per_epoch={len(train_loader)} "
             f"target_max_steps={target_training_steps} "
@@ -470,9 +477,11 @@ def train(config: TrainConfig) -> None:
 
                 if is_first_step and config.debug_fsdp:
                     log_rank(runtime, "first_step_stage=before_forward")
+                # 整段训练前向不需要 generation cache；显式关闭可兼容右 padding + FlashAttention2。
                 outputs = model(
                     input_ids=batch["input_ids"],
                     attention_mask=batch["attention_mask"],
+                    use_cache=False,
                 )
                 if is_first_step and config.debug_fsdp:
                     log_rank(runtime, "first_step_stage=after_forward")

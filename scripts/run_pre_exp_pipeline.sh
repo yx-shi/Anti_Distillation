@@ -117,6 +117,10 @@ SCORE_DEVICE="cuda:0"
 SCORE_BATCH_SIZE=4
 SCORE_MAX_LENGTH=8192
 
+# Student 打分和 SFT 使用 Transformers/PyTorch，不走 vLLM。
+# 当前 Qwen3 + Transformers 环境支持 flash_attention_2，长上下文 NLL 打分会明显受益。
+HF_ATTN_IMPLEMENTATION="flash_attention_2"
+
 
 ###############################################################################
 # Teacher 生成资源
@@ -125,6 +129,14 @@ SCORE_MAX_LENGTH=8192
 # Teacher 生成吃满 8 张 A100。Qwen3-8B 的 attention heads 可被 8 整除，TP=8 合法。
 TEACHER_GPU_IDS="0,1,2,3,4,5,6,7"
 TEACHER_TP_SIZE=8
+
+# 大规模 teacher generate 优先关闭 enforce-eager，让 vLLM 使用 CUDA graph。
+# 若遇到 CUDA graph capture OOM、卡死或静态图相关异常，把这里改成 1 可快速回退。
+TEACHER_ENFORCE_EAGER=0
+TEACHER_EAGER_ARG=""
+if [[ "${TEACHER_ENFORCE_EAGER}" == "1" ]]; then
+  TEACHER_EAGER_ARG="--enforce-eager"
+fi
 
 
 ###############################################################################
@@ -248,6 +260,7 @@ train_one_mode() {
       --weight-decay ${WEIGHT_DECAY} \
       --warmup-ratio ${WARMUP_RATIO} \
       --seed ${TRAIN_SEED} \
+      --attn-implementation ${HF_ATTN_IMPLEMENTATION} \
       --rollout-max-new-tokens ${ROLLOUT_MAX_NEW_TOKENS} \
       --disable-rollout-eval \
       --disable-eval-preview \
@@ -338,7 +351,7 @@ if [[ "${RUN_TEACHER_GENERATE}" == "1" ]]; then
       --max-model-len ${SCORE_MAX_LENGTH} \
       --tensor-parallel-size ${TEACHER_TP_SIZE} \
       --gpu-memory-utilization 0.85 \
-      --enforce-eager \
+      ${TEACHER_EAGER_ARG} \
       --trust-remote-code \
       --use-tqdm \
       2>&1 | tee ${LOG_DIR}/teacher_generate.log
@@ -360,6 +373,7 @@ if [[ "${RUN_STUDENT_SCORE}" == "1" ]]; then
       --batch-size ${SCORE_BATCH_SIZE} \
       --max-length ${SCORE_MAX_LENGTH} \
       --device ${SCORE_DEVICE} \
+      --attn-implementation ${HF_ATTN_IMPLEMENTATION} \
       2>&1 | tee ${LOG_DIR}/student_score.log
   "
 fi

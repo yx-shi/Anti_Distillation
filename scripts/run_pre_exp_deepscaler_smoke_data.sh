@@ -65,6 +65,7 @@ SCORE_VISIBLE_DEVICES="0"
 SCORE_DEVICE="cuda:0"
 SCORE_BATCH_SIZE=2
 SCORE_MAX_LENGTH=8192
+HF_ATTN_IMPLEMENTATION="flash_attention_2"
 
 CANDIDATE_POOL_FILE="${CANDIDATE_DIR}/candidate_pool.jsonl"
 SCORED_CANDIDATES_FILE="${CANDIDATE_DIR}/scored_candidates.jsonl"
@@ -118,6 +119,7 @@ run_cmd bash -lc "
     --batch-size ${SCORE_BATCH_SIZE} \
     --max-length ${SCORE_MAX_LENGTH} \
     --device ${SCORE_DEVICE} \
+    --attn-implementation ${HF_ATTN_IMPLEMENTATION} \
     2>&1 | tee ${LOG_DIR}/student_score.log
 "
 

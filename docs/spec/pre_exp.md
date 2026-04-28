@@ -27,7 +27,9 @@
 
 - Teacher 候选生成框架：`vLLM==0.8.5`
 - 运行时固定设置：`VLLM_USE_V1=0`
+- 当前 DeepScaleR 主 pipeline 默认不传 `--enforce-eager`，允许 vLLM 使用 CUDA graph；若遇到 CUDA graph capture OOM 或稳定性问题，再把脚本中的 `TEACHER_ENFORCE_EAGER` 改回 `1`。
 - Student 打分与训练框架：`transformers + torch`
+- 当前 DeepScaleR pipeline 在 Student 打分和 SFT 训练中显式传入 `attn_implementation=flash_attention_2`；脚本参数保留 `auto/eager/sdpa/flash_attention_2` 以便回退。
 - 项目运行环境：`conda` 环境 `adistill-unified`
 
 ### 2.3 当前 DeepScaleR 调整
@@ -244,6 +246,7 @@ src/pre_exp/
 
 - 读取 `candidate_pool.jsonl`
 - 对所有非空候选计算 completion token 平均 NLL
+- 支持通过 `--attn-implementation` 指定 Transformers attention backend；当前正式脚本使用 `flash_attention_2`
 - 输出 `scored_candidates.jsonl`
 
 ### `select_candidates.py`

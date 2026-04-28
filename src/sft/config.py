@@ -49,6 +49,7 @@ class TrainConfig:
     ignore_index: int = -100
     train_on_prompt: bool = False
     local_files_only: bool = True
+    attn_implementation: str = "auto"
     output_dir: str = "result/sft_output"
 
 
@@ -155,6 +156,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="If set, model/tokenizer files are allowed to be fetched remotely instead of local-only loading.",
     )
     parser.add_argument(
+        "--attn-implementation",
+        choices=["auto", "eager", "sdpa", "flash_attention_2"],
+        default="auto",
+        help=(
+            "Transformers attention backend. `auto` keeps the library default; "
+            "`flash_attention_2` uses the flash_attn package when supported by the model."
+        ),
+    )
+    parser.add_argument(
         "--output-dir",
         default="result/sft_output",
         help="训练输出目录。训练结束后会在其中保存最终 checkpoint 与配置摘要。",
@@ -199,5 +209,6 @@ def parse_args() -> TrainConfig:
         rollout_max_new_tokens=args.rollout_max_new_tokens,
         train_on_prompt=args.train_on_prompt,
         local_files_only=not args.allow_remote_model_files,
+        attn_implementation=args.attn_implementation,
         output_dir=args.output_dir,
     )
