@@ -24,7 +24,7 @@ env/
 # Project-local cache / credentials
 /.modelscope/
 docs/vllm-note/
-/vllm_dual/
+
 
 # Local experiment outputs
 *.out
