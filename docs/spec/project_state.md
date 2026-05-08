@@ -8,7 +8,7 @@
 
 当前采用两条路线：
 
-- response-level 预实验：Teacher 对同一题生成多个候选，选择 Student 平均 NLL 更高的正确候选作为 adversarial distillation 数据。
+- response-level 预实验：Teacher 对同一题生成多个候选；baseline 选第一条候选，adversarial 在可打分候选中选择 Student 平均 NLL 最高的候选，不按正确性或有效性过滤。
 - token-level adversarial decoding：修改 vLLM，使 Teacher 和 Student 在同一 prefix 上共同 forward，并在 token 级别选择对 Student 更难的 next token；hard/soft 首版已在 vLLM-dual 路径实现并通过 smoke。
 
 ## Current Code Layout
@@ -43,8 +43,8 @@
 ## Current Experimental State
 
 - GSM8K 预实验显示任务偏简单，Student base 正确率较高，蒸馏提升和 adversarial 差异不明显。
-- 已开始切换到 DeepScaleR 数据集方向。
-- 256-sample DeepScaleR data-only smoke 已完成，结论记录在 `plan/pre_exp_next_run.md`。
+- 已切换到 DeepScaleR response-level 主实验方向；当前 main 建议为 8000 samples、`k=8`、`temperature=0.9`、`top_p=0.85`、`max_new_tokens=4096`、`max_model_len/score_max_length=8192`。
+- DeepScaleR data-only smoke 已完成，结论记录在 `plan/pre_exp_next_run.md`；主 pipeline 需要覆盖数据构建、SFT 训练、checkpoint eval、final eval 和 curves。
 - vLLM-dual 当前只完成 worker-level hard/soft smoke，尚未完成 candidate -> dataset -> SFT -> eval 的 full smoke。
 
 ## Maintenance Rule

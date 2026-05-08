@@ -41,6 +41,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-samples", type=int, default=0)
     parser.add_argument("--subset-seed", type=int, default=42)
     parser.add_argument("--output-file", default=DEFAULT_OUTPUT_FILE)
+    parser.add_argument(
+        "--output-prefix",
+        default="",
+        help=(
+            "Prefix used for per-checkpoint files when --checkpoint-root evaluates multiple "
+            "checkpoints. Defaults to the --output-file stem, so different mode summary files "
+            "produce different per-checkpoint names. Single-checkpoint output is unchanged."
+        ),
+    )
     parser.add_argument("--device", default="auto")
     parser.add_argument("--tensor-parallel-size", type=int, default=1)
     parser.add_argument("--dtype", default="bfloat16")
@@ -75,6 +84,21 @@ def checkpoint_step(checkpoint_path: Path) -> int | None:
         return int(name.removeprefix("checkpoint-step-"))
     except ValueError:
         return None
+
+
+def safe_stem_component(value: str) -> str:
+    cleaned = "".join(char if char.isalnum() or char in "._-" else "_" for char in value.strip())
+    return cleaned.strip("._-") or "final_eval"
+
+
+def per_checkpoint_output_file(
+    output_file: Path,
+    output_prefix: str,
+    checkpoint_path: Path,
+) -> Path:
+    prefix = safe_stem_component(output_prefix or output_file.stem)
+    label = safe_stem_component(checkpoint_label(checkpoint_path))
+    return output_file.parent / f"{prefix}_{label}.json"
 
 
 def resolve_checkpoint_paths(args: argparse.Namespace) -> list[Path]:
@@ -277,7 +301,11 @@ def main() -> None:
         if len(checkpoint_paths) == 1:
             checkpoint_output_file = output_file
         else:
-            checkpoint_output_file = output_file.parent / f"final_eval_{checkpoint_label(checkpoint_path)}.json"
+            checkpoint_output_file = per_checkpoint_output_file(
+                output_file=output_file,
+                output_prefix=args.output_prefix,
+                checkpoint_path=checkpoint_path,
+            )
 
         records_output_file = checkpoint_output_file.with_name(
             checkpoint_output_file.stem + ".records.jsonl"

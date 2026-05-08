@@ -2,9 +2,9 @@
 
 set -euo pipefail
 
-# 这个脚本把 DeepScaleR 正式预实验的数据侧链路串起来：
+# 这个脚本把 DeepScaleR 正式预实验链路串起来：
 # teacher_generate -> student_score -> select_candidates -> build_distill_dataset
-# -> analyze_dataset
+# -> analyze_dataset -> train -> checkpoint_eval -> final_eval -> plot_curves
 #
 # 设计目标：
 # 1. 后续你自己复现实验时，只需要改顶部变量，不需要手工拼很多命令。
@@ -62,6 +62,10 @@ LOG_DIR="${ANALYSIS_DIR}/logs"
 
 mkdir -p "${CANDIDATE_DIR}" "${DATASET_DIR}" "${SELECTION_DIR}" "${ANALYSIS_DIR}" "${LOG_DIR}"
 
+# 默认拒绝覆盖已经存在且非空的重要产物，避免长任务误重跑时把结果冲掉。
+# 确认要重跑某个阶段时，在命令前显式加 `ALLOW_OVERWRITE=1`。
+ALLOW_OVERWRITE="${ALLOW_OVERWRITE:-0}"
+
 
 ###############################################################################
 # 数据与生成参数
@@ -83,21 +87,19 @@ TOP_P=0.85
 
 GEN_MAX_NEW_TOKENS=4096
 
-# prompt_batch_size 控制一次送进 vLLM 的 prompt 数。
-# 这次把它调到 64，而不是更激进的 256：
-# - 对当前 8000 条长任务，更容易更早看到 batch 完成和中间落盘
-# - 即使某个 batch 因为长回答拖慢，也不会把“无可见进度”的时间拉得太长
+# prompt_batch_size 是“每个 TP=1 副本”一次送进 vLLM 的 prompt 数。
+# 多副本并行后，总吞吐来自多个单卡 engine 同时推进，不再依赖一个 TP=8 engine。
 GEN_PROMPT_BATCH_SIZE=64
 
 # max_num_seqs 控制 vLLM scheduler 同时维护的序列数。
 # 这是吞吐相关参数，不是“总共生成多少条”的参数：
 # - 太小：GPU 并行度吃不满，teacher generate 会非常慢。
 # - 太大：KV cache 压力更高，可能 OOM。
-# 128 是 vLLM 0.8.5 的常见默认量级，适合作为本次 8 卡 teacher 生成的起点。
+# 128 是 vLLM 0.8.5 的常见默认量级，适合作为单卡 Qwen3-8B 副本的起点。
 GEN_MAX_NUM_SEQS=128
 
 # save_every_prompts 控制增量落盘频率。
-# 这里直接和 prompt_batch_size 对齐成 64，属于长任务里很常见的稳妥范式：
+# 这里直接和每个副本的 prompt_batch_size 对齐成 64，属于长任务里很常见的稳妥范式：
 # - 每完成一个 outer batch 就落一次盘
 # - 中途被打断时，最多只损失当前 batch 的结果
 SAVE_EVERY_PROMPTS=64
@@ -126,9 +128,12 @@ HF_ATTN_IMPLEMENTATION="flash_attention_2"
 # Teacher 生成资源
 ###############################################################################
 
-# Teacher 生成吃满 8 张 A100。Qwen3-8B 的 attention heads 可被 8 整除，TP=8 合法。
-TEACHER_GPU_IDS="0,1,2,3,4,5,6,7"
-TEACHER_TP_SIZE=8
+# Qwen3-8B 单卡即可放下。这里用 TP=1 的多副本并行替代 TP=8：
+# - 每张卡各跑一个完整 Teacher 副本，避免 tensor parallel 通信拖慢长生成
+# - teacher_generate.py 用 deterministic shard 切分样本，最后合并 JSONL
+TEACHER_REPLICA_GPU_IDS=(0 1 2 3 4 5 6 7)
+TEACHER_TP_SIZE=1
+TEACHER_NUM_REPLICAS=${#TEACHER_REPLICA_GPU_IDS[@]}
 
 # 大规模 teacher generate 优先关闭 enforce-eager，让 vLLM 使用 CUDA graph。
 # 若遇到 CUDA graph capture OOM、卡死或静态图相关异常，把这里改成 1 可快速回退。
@@ -203,6 +208,7 @@ RUN_TRAIN=0
 # checkpoint 子集评测不是必须，但对看学习曲线很有帮助。
 RUN_CHECKPOINT_EVAL=0
 RUN_FINAL_EVAL=0
+RUN_PLOT_CURVES=0
 
 
 ###############################################################################
@@ -212,6 +218,7 @@ RUN_FINAL_EVAL=0
 CANDIDATE_POOL_FILE="${CANDIDATE_DIR}/candidate_pool.jsonl"
 SCORED_CANDIDATES_FILE="${CANDIDATE_DIR}/scored_candidates.jsonl"
 DATASET_SUMMARY_FILE="${ANALYSIS_DIR}/dataset_summary.json"
+CURVE_DIR="${ANALYSIS_DIR}/curves"
 
 MODES=(
   "teacher_baseline"
@@ -229,6 +236,128 @@ run_cmd() {
   "$@"
 }
 
+guard_output_file() {
+  local path="$1"
+  if [[ "${ALLOW_OVERWRITE}" != "1" && -s "${path}" ]]; then
+    echo "Refusing to overwrite non-empty file: ${path}" >&2
+    echo "Set ALLOW_OVERWRITE=1 if you intentionally want to rerun this stage." >&2
+    exit 1
+  fi
+}
+
+guard_output_dir() {
+  local path="$1"
+  if [[ "${ALLOW_OVERWRITE}" != "1" && -d "${path}" && -n "$(find "${path}" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
+    echo "Refusing to reuse non-empty directory: ${path}" >&2
+    echo "Set ALLOW_OVERWRITE=1 if you intentionally want to rerun this stage." >&2
+    exit 1
+  fi
+}
+
+teacher_shard_file() {
+  local shard_idx="$1"
+  printf "%s/candidate_pool.shard_%02d_of_%02d.jsonl" \
+    "${CANDIDATE_DIR}" "${shard_idx}" "${TEACHER_NUM_REPLICAS}"
+}
+
+checkpoint_label_from_dir() {
+  local checkpoint_dir="$1"
+  local name
+  name="$(basename "${checkpoint_dir}")"
+  if [[ "${name}" == checkpoint-step-* ]]; then
+    printf "%s" "${name#checkpoint-step-}"
+  else
+    printf "%s" "${name}"
+  fi
+}
+
+merge_teacher_shards() {
+  local merged_file="$1"
+  guard_output_file "${merged_file}"
+  : > "${merged_file}"
+  for ((shard_idx = 0; shard_idx < TEACHER_NUM_REPLICAS; shard_idx++)); do
+    local shard_file
+    shard_file="$(teacher_shard_file "${shard_idx}")"
+    if [[ ! -s "${shard_file}" ]]; then
+      echo "Missing or empty teacher shard: ${shard_file}" >&2
+      exit 1
+    fi
+    cat "${shard_file}" >> "${merged_file}"
+  done
+}
+
+run_teacher_generate_replicas() {
+  guard_output_file "${CANDIDATE_POOL_FILE}"
+
+  local pids=()
+  local shard_logs=()
+  for ((shard_idx = 0; shard_idx < TEACHER_NUM_REPLICAS; shard_idx++)); do
+    local gpu_id="${TEACHER_REPLICA_GPU_IDS[${shard_idx}]}"
+    local shard_file
+    local shard_log
+    shard_file="$(teacher_shard_file "${shard_idx}")"
+    shard_log="${LOG_DIR}/teacher_generate.shard_$(printf "%02d" "${shard_idx}").log"
+    guard_output_file "${shard_file}"
+    guard_output_file "${shard_log}"
+    shard_logs+=("${shard_log}")
+
+    echo
+    echo "[$(date '+%F %T')] launching teacher shard ${shard_idx}/${TEACHER_NUM_REPLICAS} on GPU ${gpu_id}"
+    (
+      CUDA_VISIBLE_DEVICES="${gpu_id}" \
+      ${CONDA_RUN} python src/pre_exp/teacher_generate.py \
+        --model-name-or-path "${TEACHER_MODEL}" \
+        --dataset-name "${DATASET_NAME}" \
+        --dataset-config-name "${DATASET_CONFIG_NAME}" \
+        --split "${SPLIT}" \
+        --question-field "${QUESTION_FIELD}" \
+        --answer-field "${ANSWER_FIELD}" \
+        --output-file "${shard_file}" \
+        --max-samples "${MAX_SAMPLES}" \
+        --subset-seed "${SUBSET_SEED}" \
+        --num-shards "${TEACHER_NUM_REPLICAS}" \
+        --shard-index "${shard_idx}" \
+        --num-candidates "${NUM_CANDIDATES}" \
+        --temperature "${TEMPERATURE}" \
+        --top-p "${TOP_P}" \
+        --max-new-tokens "${GEN_MAX_NEW_TOKENS}" \
+        --prompt-batch-size "${GEN_PROMPT_BATCH_SIZE}" \
+        --save-every-prompts "${SAVE_EVERY_PROMPTS}" \
+        --max-num-seqs "${GEN_MAX_NUM_SEQS}" \
+        --max-model-len "${SCORE_MAX_LENGTH}" \
+        --tensor-parallel-size "${TEACHER_TP_SIZE}" \
+        --gpu-memory-utilization 0.85 \
+        ${TEACHER_EAGER_ARG} \
+        --trust-remote-code \
+        --use-tqdm \
+        > "${shard_log}" 2>&1
+    ) &
+    pids+=("$!")
+  done
+
+  local failed=0
+  for pid in "${pids[@]}"; do
+    if ! wait "${pid}"; then
+      failed=1
+    fi
+  done
+
+  if [[ "${failed}" != "0" ]]; then
+    echo "At least one teacher shard failed. Logs:" >&2
+    printf '  %s\n' "${shard_logs[@]}" >&2
+    exit 1
+  fi
+
+  merge_teacher_shards "${CANDIDATE_POOL_FILE}"
+  guard_output_file "${LOG_DIR}/teacher_generate.log"
+  {
+    echo "teacher_generate_replicas_done shards=${TEACHER_NUM_REPLICAS} output_file=${CANDIDATE_POOL_FILE}"
+    for shard_log in "${shard_logs[@]}"; do
+      echo "shard_log=${shard_log}"
+    done
+  } | tee "${LOG_DIR}/teacher_generate.log"
+}
+
 train_one_mode() {
   local mode="$1"
   local port="$2"
@@ -236,6 +365,7 @@ train_one_mode() {
   local output_dir="${RUN_DIR}/${mode}"
   local train_log="${output_dir}/train.log"
 
+  guard_output_dir "${output_dir}"
   mkdir -p "${output_dir}"
 
   # 这里用 torchrun + 8 卡 FSDP。
@@ -270,40 +400,52 @@ train_one_mode() {
 
 checkpoint_eval_one_mode() {
   local mode="$1"
+  local output_file="${ANALYSIS_DIR}/checkpoint_eval_${mode}.json"
+  local log_file="${LOG_DIR}/checkpoint_eval_${mode}.log"
+  local output_prefix="checkpoint_eval_${mode}"
 
-  # 学习曲线阶段建议一个 checkpoint 一个进程去跑。
-  # 这样更稳，不会踩到“同一进程里连续拉起多个 8 卡 vLLM engine”的生命周期问题。
+  guard_output_file "${output_file}"
+  guard_output_file "${log_file}"
+  shopt -s nullglob
+  local checkpoint_dirs=("${RUN_DIR}/${mode}"/checkpoint-step-*)
+  shopt -u nullglob
+  if [[ -d "${RUN_DIR}/${mode}/final_checkpoint" ]]; then
+    checkpoint_dirs+=("${RUN_DIR}/${mode}/final_checkpoint")
+  fi
+  for checkpoint_dir in "${checkpoint_dirs[@]}"; do
+    local checkpoint_label
+    local checkpoint_output
+    checkpoint_label="$(checkpoint_label_from_dir "${checkpoint_dir}")"
+    checkpoint_output="${ANALYSIS_DIR}/${output_prefix}_${checkpoint_label}.json"
+    guard_output_file "${checkpoint_output}"
+    guard_output_file "${checkpoint_output%.json}.records.jsonl"
+  done
+
+  # final_eval.py 在 --checkpoint-root 模式下会依次评测所有 checkpoint-step-* 和 final_checkpoint。
+  # 每个 checkpoint 仍在独立 vLLM engine 生命周期中完成，避免同一 engine 反复加载多个权重。
   run_cmd bash -lc "
     CUDA_VISIBLE_DEVICES=${EVAL_GPU_IDS} \
     ${CONDA_RUN} python src/pre_exp/final_eval.py \
       --engine ${EVAL_ENGINE} \
-      --model-name-or-path ${RUN_DIR}/${mode}/checkpoint-step-000050 \
+      --checkpoint-root ${RUN_DIR}/${mode} \
+      --checkpoint-glob 'checkpoint-step-*' \
       --max-samples ${CHECKPOINT_EVAL_MAX_SAMPLES} \
       --subset-seed ${SUBSET_SEED} \
       --max-new-tokens ${ROLLOUT_MAX_NEW_TOKENS} \
       --tensor-parallel-size ${EVAL_TP_SIZE} \
       --trust-remote-code \
-      --output-file ${ANALYSIS_DIR}/checkpoint_eval_${mode}_step50.json \
-      > ${LOG_DIR}/checkpoint_eval_${mode}_step50.log 2>&1
-  "
-
-  run_cmd bash -lc "
-    CUDA_VISIBLE_DEVICES=${EVAL_GPU_IDS} \
-    ${CONDA_RUN} python src/pre_exp/final_eval.py \
-      --engine ${EVAL_ENGINE} \
-      --model-name-or-path ${RUN_DIR}/${mode}/final_checkpoint \
-      --max-samples ${CHECKPOINT_EVAL_MAX_SAMPLES} \
-      --subset-seed ${SUBSET_SEED} \
-      --max-new-tokens ${ROLLOUT_MAX_NEW_TOKENS} \
-      --tensor-parallel-size ${EVAL_TP_SIZE} \
-      --trust-remote-code \
-      --output-file ${ANALYSIS_DIR}/checkpoint_eval_${mode}_final64.json \
-      > ${LOG_DIR}/checkpoint_eval_${mode}_final64.log 2>&1
+      --output-file ${output_file} \
+      --output-prefix ${output_prefix} \
+      > ${log_file} 2>&1
   "
 }
 
 final_eval_one_mode() {
   local mode="$1"
+  local output_file="${ANALYSIS_DIR}/final_eval_${mode}.json"
+  guard_output_file "${output_file}"
+  guard_output_file "${output_file%.json}.records.jsonl"
+  guard_output_file "${LOG_DIR}/final_eval_${mode}.log"
 
   # final eval 这里跑 GSM8K test 全量。
   # --max-samples=0 在当前脚本里表示“不抽子集，评测整个 split”。
@@ -317,9 +459,22 @@ final_eval_one_mode() {
       --max-new-tokens ${ROLLOUT_MAX_NEW_TOKENS} \
       --tensor-parallel-size ${EVAL_TP_SIZE} \
       --trust-remote-code \
-      --output-file ${ANALYSIS_DIR}/final_eval_${mode}.json \
+      --output-file ${output_file} \
       > ${LOG_DIR}/final_eval_${mode}.log 2>&1
   "
+}
+
+plot_curves() {
+  guard_output_file "${CURVE_DIR}/curve_data.json"
+  guard_output_file "${CURVE_DIR}/train_loss_curve.svg"
+  guard_output_file "${CURVE_DIR}/val_loss_ppl_curve.svg"
+  guard_output_file "${CURVE_DIR}/rollout_accuracy_curve.svg"
+
+  run_cmd ${CONDA_RUN} python src/pre_exp/plot_curves.py \
+    --run-dir "${RUN_DIR}" \
+    --analysis-dir "${ANALYSIS_DIR}" \
+    --output-dir "${CURVE_DIR}" \
+    --modes "${MODES[@]}"
 }
 
 
@@ -328,34 +483,7 @@ final_eval_one_mode() {
 ###############################################################################
 
 if [[ "${RUN_TEACHER_GENERATE}" == "1" ]]; then
-  # 这里显式给 8 卡 tensor parallel，是为了把 teacher 生成速度尽量拉满。
-  run_cmd bash -lc "
-    CUDA_VISIBLE_DEVICES=${TEACHER_GPU_IDS} \
-    ${CONDA_RUN} python src/pre_exp/teacher_generate.py \
-      --model-name-or-path ${TEACHER_MODEL} \
-      --dataset-name ${DATASET_NAME} \
-      --dataset-config-name ${DATASET_CONFIG_NAME} \
-      --split ${SPLIT} \
-      --question-field ${QUESTION_FIELD} \
-      --answer-field ${ANSWER_FIELD} \
-      --output-file ${CANDIDATE_POOL_FILE} \
-      --max-samples ${MAX_SAMPLES} \
-      --subset-seed ${SUBSET_SEED} \
-      --num-candidates ${NUM_CANDIDATES} \
-      --temperature ${TEMPERATURE} \
-      --top-p ${TOP_P} \
-      --max-new-tokens ${GEN_MAX_NEW_TOKENS} \
-      --prompt-batch-size ${GEN_PROMPT_BATCH_SIZE} \
-      --save-every-prompts ${SAVE_EVERY_PROMPTS} \
-      --max-num-seqs ${GEN_MAX_NUM_SEQS} \
-      --max-model-len ${SCORE_MAX_LENGTH} \
-      --tensor-parallel-size ${TEACHER_TP_SIZE} \
-      --gpu-memory-utilization 0.85 \
-      ${TEACHER_EAGER_ARG} \
-      --trust-remote-code \
-      --use-tqdm \
-      2>&1 | tee ${LOG_DIR}/teacher_generate.log
-  "
+  run_teacher_generate_replicas
 fi
 
 
@@ -364,6 +492,7 @@ fi
 ###############################################################################
 
 if [[ "${RUN_STUDENT_SCORE}" == "1" ]]; then
+  guard_output_file "${SCORED_CANDIDATES_FILE}"
   run_cmd bash -lc "
     CUDA_VISIBLE_DEVICES=${SCORE_VISIBLE_DEVICES} \
     ${CONDA_RUN} python src/pre_exp/student_score.py \
@@ -384,6 +513,12 @@ fi
 ###############################################################################
 
 if [[ "${RUN_SELECT_AND_BUILD}" == "1" ]]; then
+  guard_output_file "${SELECTION_DIR}/teacher_baseline.selected.jsonl"
+  guard_output_file "${SELECTION_DIR}/teacher_adversarial.selected.jsonl"
+  for mode in "${MODES[@]}"; do
+    guard_output_file "${DATASET_DIR}/distill_${mode}.jsonl"
+  done
+
   run_cmd ${CONDA_RUN} python src/pre_exp/select_candidates.py \
     --input-file "${SCORED_CANDIDATES_FILE}" \
     --output-dir "${SELECTION_DIR}"
@@ -401,6 +536,7 @@ fi
 ###############################################################################
 
 if [[ "${RUN_ANALYZE_DATASET}" == "1" ]]; then
+  guard_output_file "${DATASET_SUMMARY_FILE}"
   run_cmd ${CONDA_RUN} python src/pre_exp/analyze_dataset.py \
     --scored-candidates "${SCORED_CANDIDATES_FILE}" \
     --baseline-file "${SELECTION_DIR}/teacher_baseline.selected.jsonl" \
@@ -441,8 +577,18 @@ if [[ "${RUN_FINAL_EVAL}" == "1" ]]; then
 fi
 
 
+###############################################################################
+# 阶段 H: 曲线汇总与 SVG 绘图
+###############################################################################
+
+if [[ "${RUN_PLOT_CURVES}" == "1" ]]; then
+  plot_curves
+fi
+
+
 echo
-echo "DeepScaleR main data-only pipeline finished."
+echo "DeepScaleR main pipeline finished."
 echo "Candidates: ${CANDIDATE_DIR}"
 echo "Datasets:   ${DATASET_DIR}"
 echo "Analysis:   ${DATASET_SUMMARY_FILE}"
+echo "Curves:     ${CURVE_DIR}"

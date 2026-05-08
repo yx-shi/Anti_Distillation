@@ -42,7 +42,10 @@ def main() -> None:
                 "selected_candidate_id": record["selected_candidate_id"],
                 "teacher_candidate_count": record["teacher_candidate_count"],
                 "teacher_answer_correct": record["teacher_answer_correct"],
+                "teacher_candidate_valid": record.get("teacher_candidate_valid", False),
+                "teacher_generation_truncated": record.get("teacher_generation_truncated", False),
                 "student_mean_nll": record["student_mean_nll"],
+                "student_token_count": record.get("student_token_count", 0),
                 "fallback_reason": record["fallback_reason"],
             }
         )

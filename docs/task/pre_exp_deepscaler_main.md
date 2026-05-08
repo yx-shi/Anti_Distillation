@@ -2,7 +2,7 @@
 
 ## Goal
 
-基于 DeepScaleR smoke 结果，准备并运行更可靠的 response-level anti-distillation 主实验。
+基于 DeepScaleR smoke 结果，执行当前 response-level DeepScaleR 主实验流水线，并产出可比较的训练、评测和曲线结果。
 
 ## Required Reading
 
@@ -14,26 +14,35 @@
 
 ## Context
 
-GSM8K 难度偏低，Student base 正确率较高，adversarial 差异不明显。DeepScaleR smoke 显示数据更难，但 `max_new_tokens=1024` 截断过重，当前 smoke 结果不适合直接训练。
+GSM8K 难度偏低，Student base 正确率较高，adversarial 差异不明显。DeepScaleR smoke 显示数据更难；`deepscaler_smoke128_k8_t0.9_p0.85_len4096` 基本解决了早期 `max_new_tokens=1024` 的严重截断问题。
 
-2026-04-28 更新：selection policy 已按新的实验口径切换为完整 Teacher 分布蒸馏，不再优先过滤“未截断且正确”的候选。baseline 选 Teacher 第一条候选，adversarial 选 Student NLL 最大候选；质量字段只用于分析。
+当前 main 设置固定为 8000 samples、`k=8`、`temperature=0.9`、`top_p=0.85`、`max_new_tokens=4096`、`max_model_len=8192`、`score_max_length=8192`。
+
+selection policy 使用完整 Teacher 分布蒸馏：baseline 选 Teacher 第一条候选；adversarial 在可计算 NLL 的候选中选 `student_mean_nll` 最大者；不按正确性、截断状态或 extractable/valid 字段过滤。质量字段必须保留到 selection、distill dataset 和 summary 中，只作为解释变量。
 
 ## Implementation List
 
 - [completed] 检查并修正 selection policy，使 baseline/adversarial 学完整 Teacher 分布，而不是只学正确候选子分布。
-- 增强 dataset analysis，报告 sample-level valid/correct、截断率、选中样本质量和 NLL gap。
-- 准备 DeepScaleR 主实验脚本，使用 `docs/plan/pre_exp_next_run.md` 的建议参数。
-- 先只跑数据侧；数据质量达标后再启动训练。
-- 训练前确认 baseline/adversarial 数据长度分布接近。
+- 使用 TP=1 多 replica Teacher generation 跑 DeepScaleR main 候选生成，避免单个 vLLM tensor-parallel run 绑死所有 GPU；每个 replica 写入互不覆盖的 shard。
+- 用 main 设置完成候选打分、baseline/adversarial selection 和 distill dataset 构建。
+- 增强 dataset summary，报告 candidate-level 与 sample-level 的 empty/extractable/valid/correct/truncated、selected-candidate quality、长度分布、NLL gap、fallback rate 和 baseline/adversarial 选中差异率。
+- 训练前确认 baseline/adversarial 数据长度、正确率和截断率差异可解释；若数据质量明显异常，停在数据侧并记录原因。
+- 数据质量通过后，分别训练 `teacher_baseline` 和 `teacher_adversarial`，保持相同 Student 初始化和训练超参数。
+- 对训练 checkpoint 执行 checkpoint eval，并对最终 checkpoint 执行 final eval。
+- 运行 plot curves，产出 baseline/adversarial 的训练曲线、checkpoint eval 曲线、final eval 对比图及底层数据。
 
 ## Acceptance Criteria
 
-- 数据侧产物包含 candidate pool、scored candidates、selection、distill jsonl 和 summary。
-- summary 明确显示截断率、valid/correct sample rate、selected-candidate quality 和 NLL gap。
-- 如果数据质量不达标，停止在数据侧分析，不启动训练。
+- Teacher generation 使用 TP=1 multi-replica/sharded 方式完成，shard 合并后样本数、候选数和配置与 main 设置一致。
+- 数据侧产物包含 candidate pool、scored candidates、selection、distill jsonl 和 expanded dataset summary。
+- summary 明确显示截断率、valid/correct sample rate、selected-candidate quality、长度分布、fallback rate、选中差异率和 NLL gap。
+- distill 数据保留正确性、valid、truncation、NLL、token count 和 fallback 等质量字段，且 selection 不使用这些字段过滤。
+- 训练产物包含 baseline/adversarial checkpoint、checkpoint eval 结果、final eval 结果和 plot curves artifacts。
+- 如果数据质量不达标，停止在数据侧分析，不启动训练，并在 summary 或 run note 中说明原因。
 
 ## Do Not
 
 - 不要在数据质量不明时直接跑 SFT。
+- 不要运行未分片、会独占全部 GPU 的 Teacher main generation。
 - 不要覆盖历史 smoke/main 结果目录。
 - 不要删除 `/home/disk2/shiyixuan` 下已有 checkpoint。

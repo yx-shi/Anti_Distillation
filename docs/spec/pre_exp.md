@@ -34,18 +34,20 @@
 
 ### 2.3 当前 DeepScaleR 调整
 
-GSM8K 预实验显示任务偏简单，后续实验转向 `agentica-org/DeepScaleR-Preview-Dataset`。当前建议：
+GSM8K 预实验显示任务偏简单，后续实验转向 `agentica-org/DeepScaleR-Preview-Dataset`。当前 DeepScaleR main 配置：
 
 - `question_field=problem`
 - `answer_field=answer`
-- `num_candidates=10`
+- `max_samples=8000`
+- `num_candidates=8`
 - `temperature=0.9`
-- `top_p=0.9`
-- `max_new_tokens=2048`
-- `max_model_len=6144`
+- `top_p=0.85`
+- `max_new_tokens=4096`
+- `max_model_len=8192`
+- `score_max_length=8192`
 - selection policy 已切换为完整 Teacher 分布蒸馏：baseline 选 Teacher 第一条候选，adversarial 选 Student NLL 最大候选，不按 Teacher 正误或候选有效性过滤
 
-256-sample smoke 的详细结论见 `../plan/pre_exp_next_run.md`。
+DeepScaleR smoke 与 main 参数依据见 `../plan/pre_exp_next_run.md`。
 
 ### 2.4 Prompt 规范
 
@@ -60,7 +62,7 @@ GSM8K 预实验显示任务偏简单，后续实验转向 `agentica-org/DeepScal
 Teacher 候选生成阶段固定使用：
 
 - `enable_thinking=False`
-- 单轮 user message 形式构造 GSM8K 问题输入
+- 单轮 user message 形式构造数学题输入
 
 ## 3. 预实验定位与非目标
 
@@ -86,8 +88,8 @@ Teacher 候选生成阶段固定使用：
   - 作为 Student 训练主干
   - 后续只扩展数据接口、prompt helper、checkpoint 输出，不重写 trainer 主循环
 - `grading/*`
-  - 继续承担 GSM8K 自动判分
-  - 同时承担 Teacher 候选质量过滤
+  - 继续承担数学题答案抽取与自动判分
+  - 同时承担 Teacher 候选质量标注
 - `examples/vllm_offline/run_qwen_offline.py`
   - 作为 Teacher 批量生成脚本的原型
   - 可复用其 vLLM 初始化、SamplingParams 组织和 JSONL 落盘思路
@@ -106,11 +108,11 @@ Teacher 候选生成阶段固定使用：
 
 ## 5. 预实验工作流
 
-预实验工作流固定为四阶段，严格按“先造数据，再训练，再评测”的顺序组织。
+预实验数据构建固定为四阶段，完整 pipeline 严格按“先造数据，再训练，再评测和画曲线”的顺序组织。
 
 ### 阶段 A：Teacher 候选生成
 
-输入：GSM8K train 子集中的每个问题。
+输入：DeepScaleR 子集中的每个问题。
 
 过程：
 
@@ -118,12 +120,13 @@ Teacher 候选生成阶段固定使用：
 2. 用 vLLM 生成 `k=8` 个候选回答。
 3. 对每条候选记录完整元数据并落盘。
 
-第一版冻结的生成参数：
+当前 DeepScaleR main 生成参数：
 
 - `k=8`
-- `temperature=0.7`
-- `top_p=0.8`
-- `max_new_tokens=512`
+- `temperature=0.9`
+- `top_p=0.85`
+- `max_new_tokens=4096`
+- `max_model_len=8192`
 - 固定随机种子
 - `enable_thinking=False`
 - prompt 中追加 `Please reason step by step, and put your final answer within \boxed{}.`，以提高数学题最终答案格式的一致性
@@ -139,7 +142,7 @@ Teacher 候选生成阶段固定使用：
 
 这些字段只用于数据分析和实验解释，不再作为 selection filter。当前 response-level 实验的目标是让 Student 学 Teacher 的完整采样分布，而不是只学 Teacher 正确且格式良好的子分布。
 
-只有当同一题所有候选都没有可计算 NLL 的非空 completion 时，`teacher_adversarial` 才回退到 baseline 并写入 `fallback_reason=no_scoreable_candidate`。
+只有当同一题所有候选都没有可计算 NLL 的非空 completion 时，`teacher_adversarial` 才回退到 baseline 并写入 `fallback_reason=no_scoreable_candidate`。质量字段必须在 selection 和 distill 数据中保留，便于后续解释训练曲线差异。
 
 ### 阶段 C：Student 打分
 
@@ -202,13 +205,15 @@ Student 打分使用 `transformers + torch`，不使用 vLLM。原因是：
 - 数据规模：GSM8K train 中固定 128 条样本
 - 目标：验证候选生成、过滤、打分、数据构建、SFT 训练、评测脚本全都能无人工补丁跑通
 
-### 6.2 Main Run
+### 6.2 DeepScaleR Main Run
 
 用途：形成第一轮可分析结论。
 
-- 数据规模：GSM8K train 中固定 2000 条样本
+- 数据规模：DeepScaleR 固定 8000 条样本
 - 抽样种子：`42`
-- 评测集：GSM8K test split
+- 候选数：`k=8`
+- 生成参数：`temperature=0.9`，`top_p=0.85`，`max_new_tokens=4096`
+- 长度参数：`max_model_len=8192`，`score_max_length=8192`
 
 本轮主实验默认不直接上 full-train，原因是：
 
@@ -237,7 +242,7 @@ src/pre_exp/
 
 ### `teacher_generate.py`
 
-- 从 GSM8K 子集读取问题
+- 从 DeepScaleR 子集读取问题
 - 构造 Qwen3 chat messages
 - 调用 vLLM 生成 `k` 个候选
 - 输出 `candidate_pool.jsonl`
@@ -266,7 +271,7 @@ src/pre_exp/
 
 ### `final_eval.py`
 
-- 对训练完成的 Student checkpoint 做 GSM8K test 全量 rollout grading
+- 对训练完成的 Student checkpoint 做 rollout grading
 - 汇总最终比较结果
 
 ## 8. 产物格式
@@ -396,6 +401,12 @@ result/pre_exp/
 - `result/pre_exp/analysis/`
   - 数据统计、曲线汇总、最终比较结果
 
+当前 DeepScaleR main pipeline 还应产出：
+
+- checkpoint eval 汇总：离线消费 checkpoint，记录固定子集 `rollout_acc`
+- final eval 汇总：最终 checkpoint 的 rollout grading 结果
+- plot curves 产物：baseline/adversarial 的 `train_loss`、`val_loss/val_ppl`、`rollout_acc` 曲线图及其底层数据
+
 ## 11. 训练与评测协议
 
 ### 11.1 训练预算
@@ -407,26 +418,31 @@ result/pre_exp/
 - 相同 Student 初始权重
 - 相同 optimizer 与学习率设置
 - `max_steps=1000`
-- `eval_every=100`
-- 训练中 `rollout_eval_max_samples=64`
+- `eval_every=200`
+- `checkpoint_every=200`
+- checkpoint eval 固定子集 `max_samples=64`
 
 这里最重要的原则是：
 
 > 除了蒸馏数据的 selection rule，不再引入新的自变量。
 
-### 11.2 训练中评测
+### 11.2 训练日志与 checkpoint 评测
 
-继续复用现有 `src/sft/rollout_eval.py` 的思路，但要在后续实现里迁移到统一的 Qwen3 prompt helper。
+SFT trainer 主循环只记录 loss / ppl，并保存周期性 checkpoint；rollout grading 从 trainer 中解耦，后续由 `src/pre_exp/final_eval.py` 离线消费 checkpoint。
 
-训练中至少记录：
+训练日志至少记录：
 
 - `train_loss`
 - `val_loss`
+- `val_ppl`
+
+checkpoint eval 至少记录：
+
 - `rollout_acc`
 
 ### 11.3 训练后评测
 
-每个实验组训练结束后，必须在 GSM8K test split 上执行一次**全量** rollout grading，并比较：
+每个实验组训练结束后，必须执行一次 rollout grading，并比较：
 
 - `rollout_acc`
 - `val_loss`
@@ -436,12 +452,13 @@ result/pre_exp/
 
 ## 12. 必做的数据 sanity checks
 
-在开始训练前，至少要跑完以下统计：
+在开始训练前，至少要跑完 expanded dataset summary：
 
-1. 候选正确率
-2. 候选有效率、截断率、正确率
-3. 两组选中 response 的长度分布
+1. candidate-level empty / extractable / valid / correct / truncated
+2. sample-level valid / correct / truncated 覆盖率
+3. 两组选中 response 的质量字段和长度分布
 4. `teacher_baseline` 与 `teacher_adversarial` 之间的平均 `student_mean_nll` 差值
+5. fallback rate 和 baseline/adversarial 选中不同候选的样本占比
 
 这些统计是必须的，因为如果最终只看到训练曲线差异，却不知道数据层面发生了什么，就很难判断实验是否真的支持 anti-distillation 假设。
 
@@ -501,7 +518,7 @@ result/pre_exp/
 
 这轮做的是 response-level 版本，但它不是一次性脚手架。后续升级到 token-level 时，下列资产都可以继续保留：
 
-- `grading` 作为质量过滤与任务评测器
+- `grading` 作为质量标注与任务评测器
 - `src/sft/*` 作为 Student 训练主干
 - `candidate -> score -> select -> train -> eval` 这条数据闭环
 - 统一的 Qwen3 prompt helper
@@ -513,16 +530,16 @@ result/pre_exp/
 
 ## 15. 实施顺序
 
-后续实现必须按下面顺序推进：
+当前 DeepScaleR main pipeline 按下面顺序推进：
 
-1. 实现统一的 Qwen3 prompt helper，并设计 `candidate_pool.jsonl` / `distill_*.jsonl` schema
-2. 用 vLLM 在 smoke 子集上生成候选并人工抽查
+1. 使用统一的 Qwen3 prompt helper 与既定 schema
+2. 用 TP=1 multi-replica vLLM 生成 8000 样本 DeepScaleR 候选并合并 shard
 3. 接入 `grading` 完成 boxed / `Final Answer:` extractable + correctness 标注
 4. 实现 Student completion-token mean NLL 打分
 5. 产出两组蒸馏 JSONL
-6. 扩展 `src/sft` 数据接口，使其能读取 `distill_jsonl`
-7. 在 smoke run 上打通训练与评测
-8. 运行 2000 样本 main run，汇总曲线和最终结果
+6. 生成 expanded dataset summary，确认质量字段和 NLL gap
+7. 分别训练 `teacher_baseline` / `teacher_adversarial`
+8. 执行 checkpoint eval、final eval，并运行 plot curves 汇总结果
 
 这个顺序的核心原则是：
 

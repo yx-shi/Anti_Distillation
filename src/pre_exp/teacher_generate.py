@@ -56,6 +56,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--max-samples", type=int, default=128)
     parser.add_argument("--subset-seed", type=int, default=42)
+    parser.add_argument("--num-shards", type=int, default=1)
+    parser.add_argument("--shard-index", type=int, default=0)
     parser.add_argument("--num-candidates", type=int, default=8)
     parser.add_argument("--temperature", type=float, default=0.7)
     parser.add_argument("--top-p", type=float, default=0.8)
@@ -144,7 +146,12 @@ def append_jsonl(path: str | Path, records: list[dict[str, Any]]) -> None:
 
 
 def main() -> None:
-    args = build_arg_parser().parse_args()
+    parser = build_arg_parser()
+    args = parser.parse_args()
+    if args.num_shards < 1:
+        parser.error("--num-shards must be >= 1")
+    if not 0 <= args.shard_index < args.num_shards:
+        parser.error("--shard-index must satisfy 0 <= shard_index < num_shards")
 
     print(
         "teacher_generate_start "
@@ -152,6 +159,8 @@ def main() -> None:
         f"dataset={args.dataset_name} "
         f"split={args.split} "
         f"max_samples={args.max_samples} "
+        f"shard_index={args.shard_index} "
+        f"num_shards={args.num_shards} "
         f"num_candidates={args.num_candidates} "
         f"prompt_batch_size={args.prompt_batch_size} "
         f"save_every_prompts={args.save_every_prompts}",
@@ -160,7 +169,8 @@ def main() -> None:
 
     ensure_writable_hf_datasets_cache()
     dataset = load_dataset(args.dataset_name, args.dataset_config_name, split=args.split)
-    subset_indices = choose_subset_indices(len(dataset), args.max_samples, args.subset_seed)
+    selected_indices = choose_subset_indices(len(dataset), args.max_samples, args.subset_seed)
+    subset_indices = selected_indices[args.shard_index :: args.num_shards]
     subset_samples = [dataset[int(dataset_idx)] for dataset_idx in subset_indices]
 
     tokenizer = AutoTokenizer.from_pretrained(
@@ -353,6 +363,8 @@ def main() -> None:
         "teacher_generate_done "
         f"prompts={len(prompt_payloads)} "
         f"records={completed_records} "
+        f"shard_index={args.shard_index} "
+        f"num_shards={args.num_shards} "
         f"output_file={args.output_file}",
         flush=True,
     )
