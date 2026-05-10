@@ -18,7 +18,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from pre_exp.common import choose_subset_indices
+from pre_exp.common import choose_subset_indices, choose_subset_indices_from_pool
 
 EVAL_PREVIEW_QUESTION = (
     "James decides to run 3 sprints 3 times a week. "
@@ -85,6 +85,10 @@ def build_rollout_eval_samples(
     eval_source_dataset: Any,
     max_samples: int,
     subset_seed: int,
+    *,
+    question_field: str = "question",
+    answer_field: str = "answer",
+    candidate_indices: list[int] | None = None,
 ) -> list[dict[str, Any]]:
     """把评测集样本转换成统一的 rollout 请求视图。
 
@@ -93,17 +97,34 @@ def build_rollout_eval_samples(
     """
 
     dataset_size = len(eval_source_dataset)
-    selected_indices = choose_subset_indices(dataset_size, max_samples, subset_seed)
+    if candidate_indices is None:
+        selected_indices = choose_subset_indices(dataset_size, max_samples, subset_seed)
+    else:
+        selected_indices = choose_subset_indices_from_pool(candidate_indices, max_samples, subset_seed)
 
     prepared_samples: list[dict[str, Any]] = []
     for dataset_idx in selected_indices:
         sample = eval_source_dataset[int(dataset_idx)]
-        question = sample["question"].strip()
+        if question_field not in sample:
+            available_fields = ", ".join(sorted(sample.keys()))
+            raise KeyError(
+                f"Question field `{question_field}` is not present in eval sample. "
+                f"Available fields: {available_fields}"
+            )
+        if answer_field not in sample:
+            available_fields = ", ".join(sorted(sample.keys()))
+            raise KeyError(
+                f"Answer field `{answer_field}` is not present in eval sample. "
+                f"Available fields: {available_fields}"
+            )
+
+        question = str(sample[question_field]).strip()
+        raw_answer = str(sample[answer_field]).strip()
         prepared_samples.append(
             {
                 "sample_id": int(dataset_idx),
                 "question": question,
-                "gold_answer": extract_gsm8k_final_answer(sample["answer"]),
+                "gold_answer": extract_gsm8k_final_answer(raw_answer),
                 "prompt_text": build_rollout_prompt(tokenizer, question),
             }
         )

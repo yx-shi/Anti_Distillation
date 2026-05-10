@@ -19,7 +19,7 @@ if str(PROJECT_ROOT) not in sys.path:
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from pre_exp.common import write_json, write_jsonl
+from pre_exp.common import choose_holdout_indices, write_json, write_jsonl
 from sft.hf_cache import ensure_writable_hf_datasets_cache
 from sft.rollout_eval import build_rollout_eval_samples, grade_rollout_predictions
 
@@ -37,9 +37,26 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dataset-name", default="openai/gsm8k")
     parser.add_argument("--dataset-config-name", default="main")
     parser.add_argument("--split", default="test")
+    parser.add_argument("--question-field", default="question")
+    parser.add_argument("--answer-field", default="answer")
     parser.add_argument("--max-new-tokens", type=int, default=512)
     parser.add_argument("--max-samples", type=int, default=0)
     parser.add_argument("--subset-seed", type=int, default=42)
+    parser.add_argument(
+        "--exclude-subset-max-samples",
+        type=int,
+        default=0,
+        help=(
+            "If positive, exclude the deterministic subset chosen from the eval dataset with "
+            "this max_samples value before sampling eval examples. Used for DeepScaleR holdout."
+        ),
+    )
+    parser.add_argument(
+        "--exclude-subset-seed",
+        type=int,
+        default=42,
+        help="Seed paired with --exclude-subset-max-samples when defining the excluded subset.",
+    )
     parser.add_argument("--output-file", default=DEFAULT_OUTPUT_FILE)
     parser.add_argument(
         "--output-prefix",
@@ -135,6 +152,18 @@ def load_eval_dataset(args: argparse.Namespace) -> Any:
     return load_dataset(args.dataset_name, args.dataset_config_name, split=args.split)
 
 
+def resolve_candidate_indices(dataset: Any, args: argparse.Namespace) -> list[int] | None:
+    if args.exclude_subset_max_samples <= 0:
+        return None
+    return choose_holdout_indices(
+        len(dataset),
+        exclude_max_samples=args.exclude_subset_max_samples,
+        exclude_seed=args.exclude_subset_seed,
+        max_samples=0,
+        subset_seed=args.subset_seed,
+    )
+
+
 def run_hf_rollout_eval(
     checkpoint_path: Path,
     dataset: Any,
@@ -161,6 +190,9 @@ def run_hf_rollout_eval(
         eval_source_dataset=dataset,
         max_samples=args.max_samples,
         subset_seed=args.subset_seed,
+        question_field=args.question_field,
+        answer_field=args.answer_field,
+        candidate_indices=resolve_candidate_indices(dataset, args),
     )
     prompts = [sample["prompt_text"] for sample in samples]
 
@@ -203,6 +235,9 @@ def run_vllm_rollout_eval(
         eval_source_dataset=dataset,
         max_samples=args.max_samples,
         subset_seed=args.subset_seed,
+        question_field=args.question_field,
+        answer_field=args.answer_field,
+        candidate_indices=resolve_candidate_indices(dataset, args),
     )
     prompts = [sample["prompt_text"] for sample in samples]
 
@@ -272,9 +307,18 @@ def evaluate_checkpoint(
         "dataset_name": args.dataset_name,
         "dataset_config_name": args.dataset_config_name,
         "split": args.split,
+        "question_field": args.question_field,
+        "answer_field": args.answer_field,
         "max_new_tokens": args.max_new_tokens,
         "max_samples": args.max_samples,
         "subset_seed": args.subset_seed,
+        "exclude_subset_max_samples": args.exclude_subset_max_samples,
+        "exclude_subset_seed": args.exclude_subset_seed,
+        "eligible_sample_count": (
+            len(resolve_candidate_indices(dataset, args))
+            if args.exclude_subset_max_samples > 0
+            else len(dataset)
+        ),
         "metrics": metrics,
     }
     return payload, eval_records
@@ -341,9 +385,13 @@ def main() -> None:
                 "dataset_name": args.dataset_name,
                 "dataset_config_name": args.dataset_config_name,
                 "split": args.split,
+                "question_field": args.question_field,
+                "answer_field": args.answer_field,
                 "max_new_tokens": args.max_new_tokens,
                 "max_samples": args.max_samples,
                 "subset_seed": args.subset_seed,
+                "exclude_subset_max_samples": args.exclude_subset_max_samples,
+                "exclude_subset_seed": args.exclude_subset_seed,
                 "checkpoints": summary_rows,
             },
         )

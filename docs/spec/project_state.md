@@ -43,8 +43,8 @@
 ## Current Experimental State
 
 - GSM8K 预实验显示任务偏简单，Student base 正确率较高，蒸馏提升和 adversarial 差异不明显。
-- 已切换到 DeepScaleR response-level 主实验方向；当前 main 建议为 8000 samples、`k=8`、`temperature=0.9`、`top_p=0.85`、`max_new_tokens=4096`、`max_model_len/score_max_length=8192`。
-- DeepScaleR data-only smoke 已完成，结论记录在 `plan/pre_exp_next_run.md`；主 pipeline 需要覆盖数据构建、SFT 训练、checkpoint eval、final eval 和 curves。
+- DeepScaleR response-level main8000 预实验已完成：8000 samples、`k=8`、`temperature=0.9`、`top_p=0.85`、`max_new_tokens=4096`、`max_model_len/score_max_length=8192`。
+- main8000 训练使用 `TRAIN_MAX_LENGTH=5120`、8 卡 FSDP、1000 step；rollout eval 使用 DeepScaleR holdout，排除 seed-42 main8000 训练子集。final 4096-sample holdout acc：`teacher_baseline` 37.43%，`teacher_adversarial` 36.47%。结果摘要见 `result/pre_exp/analysis/deepscaler_main8000_k8_t0.9_p0.85_len4096/run_summary.md`。
 - vLLM-dual 当前只完成 worker-level hard/soft smoke，尚未完成 candidate -> dataset -> SFT -> eval 的 full smoke。
 
 ## Maintenance Rule

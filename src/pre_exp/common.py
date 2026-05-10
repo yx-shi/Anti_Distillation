@@ -60,3 +60,39 @@ def choose_subset_indices(dataset_size: int, max_samples: int, seed: int) -> lis
     selected = rng.sample(range(dataset_size), k=max_samples)
     selected.sort()
     return selected
+
+
+def choose_subset_indices_from_pool(pool_indices: list[int], max_samples: int, seed: int) -> list[int]:
+    """从给定候选 index 池中抽固定大小子集，并按原始 index 排序返回。"""
+
+    pool = list(pool_indices)
+    if max_samples <= 0 or max_samples >= len(pool):
+        return sorted(pool)
+
+    rng = random.Random(seed)
+    selected = rng.sample(pool, k=max_samples)
+    selected.sort()
+    return selected
+
+
+def choose_holdout_indices(
+    dataset_size: int,
+    *,
+    exclude_max_samples: int,
+    exclude_seed: int,
+    max_samples: int,
+    subset_seed: int,
+) -> list[int]:
+    """先排除一个固定训练子集，再从剩余 holdout 中抽评测子集。
+
+    DeepScaleR 只有 train split，因此 main8000 后续评测需要显式排除当时
+    `max_samples=8000, subset_seed=42` 抽到的训练题目。这里把这个范式集中到
+    一个 helper 中，避免训练验证集、checkpoint eval、final eval 各自手写一套。
+    """
+
+    excluded: set[int] = set()
+    if exclude_max_samples > 0:
+        excluded = set(choose_subset_indices(dataset_size, exclude_max_samples, exclude_seed))
+
+    holdout_pool = [idx for idx in range(dataset_size) if idx not in excluded]
+    return choose_subset_indices_from_pool(holdout_pool, max_samples, subset_seed)

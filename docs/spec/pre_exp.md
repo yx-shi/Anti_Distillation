@@ -420,11 +420,16 @@ result/pre_exp/
 - `max_steps=1000`
 - `eval_every=200`
 - `checkpoint_every=200`
-- checkpoint eval 固定子集 `max_samples=64`
+- `train_max_length=5120`
+- checkpoint eval 固定 DeepScaleR holdout 子集 `max_samples=1024`
+- final eval 固定 DeepScaleR holdout 子集 `max_samples=4096`
 
 这里最重要的原则是：
 
 > 除了蒸馏数据的 selection rule，不再引入新的自变量。
+
+DeepScaleR 只有 train split；本轮 main8000 之后的 holdout 定义为排除
+`max_samples=8000, subset_seed=42` 训练子集后的剩余 32,315 条样本。
 
 ### 11.2 训练日志与 checkpoint 评测
 

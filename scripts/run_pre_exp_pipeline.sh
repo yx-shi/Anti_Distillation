@@ -156,23 +156,24 @@ TRAIN_NPROC=8
 # global batch size = 8 * 2 = 16；
 # 因此 1000 step 大约对应 8000 / 16 = 500 step/epoch，也就是约 2 个 epoch。
 # 这个预算足够拉开 baseline / adversarial 的学习曲线，又不会把训练拖得过长。
-MAX_STEPS=1000
-EVAL_EVERY=200
-CHECKPOINT_EVERY=200
-MAX_CHECKPOINTS_TO_KEEP=5
+MAX_STEPS="${MAX_STEPS:-1000}"
+EVAL_EVERY="${EVAL_EVERY:-200}"
+CHECKPOINT_EVERY="${CHECKPOINT_EVERY:-200}"
+MAX_CHECKPOINTS_TO_KEEP="${MAX_CHECKPOINTS_TO_KEEP:-5}"
 
-# DeepScaleR 数据里 completion 更长一些，因此把训练长度稍微放宽到 700。
-TRAIN_MAX_LENGTH=700
+# main8000 distill 样本的 full length 中位数约 1.27k，p95 约 4.2k。
+# 5120 基本覆盖本轮样本，避免 700 长度设置只学到 response 开头。
+TRAIN_MAX_LENGTH="${TRAIN_MAX_LENGTH:-5120}"
 
-# rollout token 上限用于离线评测，不再在 trainer 里做阻塞式 rollout。
-ROLLOUT_MAX_NEW_TOKENS=512
+# DeepScaleR 推理链比 GSM8K 长很多；rollout eval 对齐 Teacher 生成上限。
+ROLLOUT_MAX_NEW_TOKENS="${ROLLOUT_MAX_NEW_TOKENS:-4096}"
 
-TRAIN_BATCH_SIZE=2
-EVAL_BATCH_SIZE=2
-LEARNING_RATE=5e-5
-WEIGHT_DECAY=0.01
-WARMUP_RATIO=0.1
-TRAIN_SEED=42
+TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-2}"
+EVAL_BATCH_SIZE="${EVAL_BATCH_SIZE:-2}"
+LEARNING_RATE="${LEARNING_RATE:-5e-5}"
+WEIGHT_DECAY="${WEIGHT_DECAY:-0.01}"
+WARMUP_RATIO="${WARMUP_RATIO:-0.1}"
+TRAIN_SEED="${TRAIN_SEED:-42}"
 
 
 ###############################################################################
@@ -180,17 +181,35 @@ TRAIN_SEED=42
 ###############################################################################
 
 EVAL_ENGINE="vllm"
-# vLLM 的 tensor parallel size 需要能整除模型 attention heads。
-# Qwen3-8B 的 attention heads 是 32，因此 7 卡 TP 不合法；
-# 这里退回到 4 卡，是当前空闲卡里最稳妥、兼顾吞吐和兼容性的设置。
-EVAL_GPU_IDS="1,2,3,4"
-EVAL_TP_SIZE=4
+# Qwen3-1.7B 单卡可以完整承载 eval engine；TP=1 可以避免不必要通信。
+# checkpoint eval 会把多个 checkpoint 分配到不同 GPU 上并行跑。
+EVAL_GPU_IDS="${EVAL_GPU_IDS:-0,1,2,3,4,5,6,7}"
+IFS=',' read -r -a EVAL_GPU_ID_LIST <<< "${EVAL_GPU_IDS}"
+EVAL_TP_SIZE="${EVAL_TP_SIZE:-1}"
+EVAL_MAX_MODEL_LEN="${EVAL_MAX_MODEL_LEN:-8192}"
+EVAL_MAX_NUM_SEQS="${EVAL_MAX_NUM_SEQS:-32}"
+EVAL_GPU_MEMORY_UTILIZATION="${EVAL_GPU_MEMORY_UTILIZATION:-0.85}"
 
-# 固定 64 条子集，用来看 checkpoint 学习曲线。
-CHECKPOINT_EVAL_MAX_SAMPLES=64
+# 固定 1024 条 DeepScaleR holdout 子集，用来看 checkpoint 学习曲线。
+CHECKPOINT_EVAL_MAX_SAMPLES="${CHECKPOINT_EVAL_MAX_SAMPLES:-1024}"
 
-# 最终 full test 用 max_samples=0，表示评测整个 split。
-FINAL_EVAL_MAX_SAMPLES=0
+# final eval 跑更大的 DeepScaleR holdout 子集，作为本轮主结论。
+FINAL_EVAL_MAX_SAMPLES="${FINAL_EVAL_MAX_SAMPLES:-4096}"
+
+# DeepScaleR 只有 train split；holdout 定义为排除 main8000 训练子集后的剩余样本。
+EVAL_DATASET_NAME="${EVAL_DATASET_NAME:-${DATASET_NAME}}"
+EVAL_DATASET_CONFIG_NAME="${EVAL_DATASET_CONFIG_NAME:-${DATASET_CONFIG_NAME}}"
+EVAL_SPLIT="${EVAL_SPLIT:-${SPLIT}}"
+EVAL_QUESTION_FIELD="${EVAL_QUESTION_FIELD:-${QUESTION_FIELD}}"
+EVAL_ANSWER_FIELD="${EVAL_ANSWER_FIELD:-${ANSWER_FIELD}}"
+EVAL_EXCLUDE_MAX_SAMPLES="${EVAL_EXCLUDE_MAX_SAMPLES:-${MAX_SAMPLES}}"
+EVAL_EXCLUDE_SEED="${EVAL_EXCLUDE_SEED:-${SUBSET_SEED}}"
+
+# trainer 的 val_loss/ppl 使用固定的 DeepScaleR holdout JSONL，避免每次 eval 扫全量 40k。
+HOLDOUT_EVAL_MAX_SAMPLES="${HOLDOUT_EVAL_MAX_SAMPLES:-1024}"
+HOLDOUT_EVAL_COMPLETION_FIELD="${HOLDOUT_EVAL_COMPLETION_FIELD:-solution}"
+HOLDOUT_EVAL_FILE="${DATASET_DIR}/deepscaler_holdout_eval_${HOLDOUT_EVAL_MAX_SAMPLES}_seed${SUBSET_SEED}.jsonl"
+HOLDOUT_EVAL_SUMMARY_FILE="${HOLDOUT_EVAL_FILE%.jsonl}.summary.json"
 
 
 ###############################################################################
@@ -199,16 +218,20 @@ FINAL_EVAL_MAX_SAMPLES=0
 
 # 这些开关方便你重跑局部阶段。
 # 例如只想重跑分析，可以把前面都改成 0，只保留 RUN_ANALYZE_DATASET=1。
-RUN_TEACHER_GENERATE=1
-RUN_STUDENT_SCORE=1
-RUN_SELECT_AND_BUILD=1
-RUN_ANALYZE_DATASET=1
-RUN_TRAIN=0
+# 现在 8000 条 main 数据已经产出后，可以用下面这种方式只启动训练：
+# RUN_TEACHER_GENERATE=0 RUN_STUDENT_SCORE=0 RUN_SELECT_AND_BUILD=0 RUN_ANALYZE_DATASET=0 RUN_TRAIN=1 bash scripts/run_pre_exp_pipeline.sh
+# main8000 数据侧已经产出，默认只跑剩余分析、训练和评测阶段。
+RUN_TEACHER_GENERATE="${RUN_TEACHER_GENERATE:-0}"
+RUN_STUDENT_SCORE="${RUN_STUDENT_SCORE:-0}"
+RUN_SELECT_AND_BUILD="${RUN_SELECT_AND_BUILD:-0}"
+RUN_ANALYZE_DATASET="${RUN_ANALYZE_DATASET:-1}"
+RUN_BUILD_HOLDOUT_EVAL="${RUN_BUILD_HOLDOUT_EVAL:-1}"
+RUN_TRAIN="${RUN_TRAIN:-1}"
 
 # checkpoint 子集评测不是必须，但对看学习曲线很有帮助。
-RUN_CHECKPOINT_EVAL=0
-RUN_FINAL_EVAL=0
-RUN_PLOT_CURVES=0
+RUN_CHECKPOINT_EVAL="${RUN_CHECKPOINT_EVAL:-1}"
+RUN_FINAL_EVAL="${RUN_FINAL_EVAL:-1}"
+RUN_PLOT_CURVES="${RUN_PLOT_CURVES:-1}"
 
 
 ###############################################################################
@@ -217,7 +240,7 @@ RUN_PLOT_CURVES=0
 
 CANDIDATE_POOL_FILE="${CANDIDATE_DIR}/candidate_pool.jsonl"
 SCORED_CANDIDATES_FILE="${CANDIDATE_DIR}/scored_candidates.jsonl"
-DATASET_SUMMARY_FILE="${ANALYSIS_DIR}/dataset_summary.json"
+DATASET_SUMMARY_FILE="${ANALYSIS_DIR}/dataset_summary_expanded.json"
 CURVE_DIR="${ANALYSIS_DIR}/curves"
 
 MODES=(
@@ -268,6 +291,20 @@ checkpoint_label_from_dir() {
     printf "%s" "${name#checkpoint-step-}"
   else
     printf "%s" "${name}"
+  fi
+}
+
+wait_for_eval_batch() {
+  local failed=0
+  local pid
+  for pid in "$@"; do
+    if ! wait "${pid}"; then
+      failed=1
+    fi
+  done
+  if [[ "${failed}" != "0" ]]; then
+    echo "At least one eval worker failed. Check logs under ${LOG_DIR}." >&2
+    exit 1
   fi
 }
 
@@ -378,6 +415,7 @@ train_one_mode() {
       --model-name-or-path ${STUDENT_MODEL} \
       --dataset-format distill_jsonl \
       --train-file ${train_file} \
+      --eval-file ${HOLDOUT_EVAL_FILE} \
       --output-dir ${output_dir} \
       --max-steps ${MAX_STEPS} \
       --eval-every ${EVAL_EVERY} \
@@ -401,17 +439,17 @@ train_one_mode() {
 checkpoint_eval_one_mode() {
   local mode="$1"
   local output_file="${ANALYSIS_DIR}/checkpoint_eval_${mode}.json"
-  local log_file="${LOG_DIR}/checkpoint_eval_${mode}.log"
   local output_prefix="checkpoint_eval_${mode}"
 
   guard_output_file "${output_file}"
-  guard_output_file "${log_file}"
   shopt -s nullglob
   local checkpoint_dirs=("${RUN_DIR}/${mode}"/checkpoint-step-*)
   shopt -u nullglob
   if [[ -d "${RUN_DIR}/${mode}/final_checkpoint" ]]; then
     checkpoint_dirs+=("${RUN_DIR}/${mode}/final_checkpoint")
   fi
+  local checkpoint_outputs=()
+  local checkpoint_dir
   for checkpoint_dir in "${checkpoint_dirs[@]}"; do
     local checkpoint_label
     local checkpoint_output
@@ -419,45 +457,104 @@ checkpoint_eval_one_mode() {
     checkpoint_output="${ANALYSIS_DIR}/${output_prefix}_${checkpoint_label}.json"
     guard_output_file "${checkpoint_output}"
     guard_output_file "${checkpoint_output%.json}.records.jsonl"
+    guard_output_file "${LOG_DIR}/${output_prefix}_${checkpoint_label}.log"
+    checkpoint_outputs+=("${checkpoint_output}")
   done
 
-  # final_eval.py 在 --checkpoint-root 模式下会依次评测所有 checkpoint-step-* 和 final_checkpoint。
-  # 每个 checkpoint 仍在独立 vLLM engine 生命周期中完成，避免同一 engine 反复加载多个权重。
-  run_cmd bash -lc "
-    CUDA_VISIBLE_DEVICES=${EVAL_GPU_IDS} \
-    ${CONDA_RUN} python src/pre_exp/final_eval.py \
-      --engine ${EVAL_ENGINE} \
-      --checkpoint-root ${RUN_DIR}/${mode} \
-      --checkpoint-glob 'checkpoint-step-*' \
-      --max-samples ${CHECKPOINT_EVAL_MAX_SAMPLES} \
-      --subset-seed ${SUBSET_SEED} \
-      --max-new-tokens ${ROLLOUT_MAX_NEW_TOKENS} \
-      --tensor-parallel-size ${EVAL_TP_SIZE} \
-      --trust-remote-code \
-      --output-file ${output_file} \
-      --output-prefix ${output_prefix} \
-      > ${log_file} 2>&1
-  "
+  if [[ "${#checkpoint_dirs[@]}" == "0" ]]; then
+    echo "No checkpoints found for mode ${mode} under ${RUN_DIR}/${mode}" >&2
+    exit 1
+  fi
+  if [[ "${#EVAL_GPU_ID_LIST[@]}" == "0" ]]; then
+    echo "EVAL_GPU_IDS is empty." >&2
+    exit 1
+  fi
+
+  local pids=()
+  local launched_in_batch=0
+  local checkpoint_idx=0
+  for checkpoint_dir in "${checkpoint_dirs[@]}"; do
+    local checkpoint_label
+    local checkpoint_output
+    local checkpoint_log
+    local gpu_id
+    checkpoint_label="$(checkpoint_label_from_dir "${checkpoint_dir}")"
+    checkpoint_output="${ANALYSIS_DIR}/${output_prefix}_${checkpoint_label}.json"
+    checkpoint_log="${LOG_DIR}/${output_prefix}_${checkpoint_label}.log"
+    gpu_id="${EVAL_GPU_ID_LIST[$((checkpoint_idx % ${#EVAL_GPU_ID_LIST[@]}))]}"
+
+    echo
+    echo "[$(date '+%F %T')] launching checkpoint eval mode=${mode} checkpoint=${checkpoint_label} gpu=${gpu_id}"
+    (
+      CUDA_VISIBLE_DEVICES="${gpu_id}" \
+      ${CONDA_RUN} python src/pre_exp/final_eval.py \
+        --engine "${EVAL_ENGINE}" \
+        --model-name-or-path "${checkpoint_dir}" \
+        --dataset-name "${EVAL_DATASET_NAME}" \
+        --dataset-config-name "${EVAL_DATASET_CONFIG_NAME}" \
+        --split "${EVAL_SPLIT}" \
+        --question-field "${EVAL_QUESTION_FIELD}" \
+        --answer-field "${EVAL_ANSWER_FIELD}" \
+        --exclude-subset-max-samples "${EVAL_EXCLUDE_MAX_SAMPLES}" \
+        --exclude-subset-seed "${EVAL_EXCLUDE_SEED}" \
+        --max-samples "${CHECKPOINT_EVAL_MAX_SAMPLES}" \
+        --subset-seed "${SUBSET_SEED}" \
+        --max-new-tokens "${ROLLOUT_MAX_NEW_TOKENS}" \
+        --tensor-parallel-size "${EVAL_TP_SIZE}" \
+        --max-model-len "${EVAL_MAX_MODEL_LEN}" \
+        --max-num-seqs "${EVAL_MAX_NUM_SEQS}" \
+        --gpu-memory-utilization "${EVAL_GPU_MEMORY_UTILIZATION}" \
+        --trust-remote-code \
+        --output-file "${checkpoint_output}" \
+        > "${checkpoint_log}" 2>&1
+    ) &
+    pids+=("$!")
+    launched_in_batch=$((launched_in_batch + 1))
+    checkpoint_idx=$((checkpoint_idx + 1))
+
+    if [[ "${launched_in_batch}" == "${#EVAL_GPU_ID_LIST[@]}" ]]; then
+      wait_for_eval_batch "${pids[@]}"
+      pids=()
+      launched_in_batch=0
+    fi
+  done
+  if [[ "${#pids[@]}" != "0" ]]; then
+    wait_for_eval_batch "${pids[@]}"
+  fi
+
+  run_cmd ${CONDA_RUN} python src/pre_exp/collect_eval_summary.py \
+    --output-file "${output_file}" \
+    --input-files "${checkpoint_outputs[@]}"
 }
 
 final_eval_one_mode() {
   local mode="$1"
+  local gpu_id="$2"
   local output_file="${ANALYSIS_DIR}/final_eval_${mode}.json"
   guard_output_file "${output_file}"
   guard_output_file "${output_file%.json}.records.jsonl"
   guard_output_file "${LOG_DIR}/final_eval_${mode}.log"
 
-  # final eval 这里跑 GSM8K test 全量。
-  # --max-samples=0 在当前脚本里表示“不抽子集，评测整个 split”。
+  # final eval 使用 DeepScaleR holdout，排除 main8000 训练子集。
   run_cmd bash -lc "
-    CUDA_VISIBLE_DEVICES=${EVAL_GPU_IDS} \
+    CUDA_VISIBLE_DEVICES=${gpu_id} \
     ${CONDA_RUN} python src/pre_exp/final_eval.py \
       --engine ${EVAL_ENGINE} \
       --model-name-or-path ${RUN_DIR}/${mode}/final_checkpoint \
+      --dataset-name ${EVAL_DATASET_NAME} \
+      --dataset-config-name ${EVAL_DATASET_CONFIG_NAME} \
+      --split ${EVAL_SPLIT} \
+      --question-field ${EVAL_QUESTION_FIELD} \
+      --answer-field ${EVAL_ANSWER_FIELD} \
+      --exclude-subset-max-samples ${EVAL_EXCLUDE_MAX_SAMPLES} \
+      --exclude-subset-seed ${EVAL_EXCLUDE_SEED} \
       --max-samples ${FINAL_EVAL_MAX_SAMPLES} \
       --subset-seed ${SUBSET_SEED} \
       --max-new-tokens ${ROLLOUT_MAX_NEW_TOKENS} \
       --tensor-parallel-size ${EVAL_TP_SIZE} \
+      --max-model-len ${EVAL_MAX_MODEL_LEN} \
+      --max-num-seqs ${EVAL_MAX_NUM_SEQS} \
+      --gpu-memory-utilization ${EVAL_GPU_MEMORY_UTILIZATION} \
       --trust-remote-code \
       --output-file ${output_file} \
       > ${LOG_DIR}/final_eval_${mode}.log 2>&1
@@ -546,6 +643,29 @@ fi
 
 
 ###############################################################################
+# 阶段 D2: 构建固定 DeepScaleR holdout eval JSONL
+###############################################################################
+
+if [[ "${RUN_BUILD_HOLDOUT_EVAL}" == "1" ]]; then
+  guard_output_file "${HOLDOUT_EVAL_FILE}"
+  guard_output_file "${HOLDOUT_EVAL_SUMMARY_FILE}"
+  run_cmd ${CONDA_RUN} python src/pre_exp/build_holdout_eval_dataset.py \
+    --dataset-name "${DATASET_NAME}" \
+    --dataset-config-name "${DATASET_CONFIG_NAME}" \
+    --split "${SPLIT}" \
+    --question-field "${QUESTION_FIELD}" \
+    --answer-field "${ANSWER_FIELD}" \
+    --completion-field "${HOLDOUT_EVAL_COMPLETION_FIELD}" \
+    --output-file "${HOLDOUT_EVAL_FILE}" \
+    --summary-file "${HOLDOUT_EVAL_SUMMARY_FILE}" \
+    --max-samples "${HOLDOUT_EVAL_MAX_SAMPLES}" \
+    --subset-seed "${SUBSET_SEED}" \
+    --exclude-subset-max-samples "${MAX_SAMPLES}" \
+    --exclude-subset-seed "${SUBSET_SEED}"
+fi
+
+
+###############################################################################
 # 阶段 E: 两组 SFT
 ###############################################################################
 
@@ -556,7 +676,7 @@ fi
 
 
 ###############################################################################
-# 阶段 F: 中间 checkpoint 学习曲线评测（64 条固定子集）
+# 阶段 F: 中间 checkpoint 学习曲线评测（DeepScaleR holdout 固定子集）
 ###############################################################################
 
 if [[ "${RUN_CHECKPOINT_EVAL}" == "1" ]]; then
@@ -571,9 +691,17 @@ fi
 ###############################################################################
 
 if [[ "${RUN_FINAL_EVAL}" == "1" ]]; then
+  pids=()
+  mode_idx=0
   for mode in "${MODES[@]}"; do
-    final_eval_one_mode "${mode}"
+    gpu_id="${EVAL_GPU_ID_LIST[$((mode_idx % ${#EVAL_GPU_ID_LIST[@]}))]}"
+    echo
+    echo "[$(date '+%F %T')] launching final eval mode=${mode} gpu=${gpu_id}"
+    final_eval_one_mode "${mode}" "${gpu_id}" &
+    pids+=("$!")
+    mode_idx=$((mode_idx + 1))
   done
+  wait_for_eval_batch "${pids[@]}"
 fi
 
 
@@ -591,4 +719,5 @@ echo "DeepScaleR main pipeline finished."
 echo "Candidates: ${CANDIDATE_DIR}"
 echo "Datasets:   ${DATASET_DIR}"
 echo "Analysis:   ${DATASET_SUMMARY_FILE}"
+echo "Holdout:    ${HOLDOUT_EVAL_FILE}"
 echo "Curves:     ${CURVE_DIR}"

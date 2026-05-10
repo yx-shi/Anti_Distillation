@@ -23,13 +23,27 @@ selection policy 使用完整 Teacher 分布蒸馏：baseline 选 Teacher 第一
 ## Implementation List
 
 - [completed] 检查并修正 selection policy，使 baseline/adversarial 学完整 Teacher 分布，而不是只学正确候选子分布。
-- 使用 TP=1 多 replica Teacher generation 跑 DeepScaleR main 候选生成，避免单个 vLLM tensor-parallel run 绑死所有 GPU；每个 replica 写入互不覆盖的 shard。
-- 用 main 设置完成候选打分、baseline/adversarial selection 和 distill dataset 构建。
-- 增强 dataset summary，报告 candidate-level 与 sample-level 的 empty/extractable/valid/correct/truncated、selected-candidate quality、长度分布、NLL gap、fallback rate 和 baseline/adversarial 选中差异率。
-- 训练前确认 baseline/adversarial 数据长度、正确率和截断率差异可解释；若数据质量明显异常，停在数据侧并记录原因。
-- 数据质量通过后，分别训练 `teacher_baseline` 和 `teacher_adversarial`，保持相同 Student 初始化和训练超参数。
-- 对训练 checkpoint 执行 checkpoint eval，并对最终 checkpoint 执行 final eval。
-- 运行 plot curves，产出 baseline/adversarial 的训练曲线、checkpoint eval 曲线、final eval 对比图及底层数据。
+- [completed] 使用 TP=1 多 replica Teacher generation 跑 DeepScaleR main 候选生成，避免单个 vLLM tensor-parallel run 绑死所有 GPU；每个 replica 写入互不覆盖的 shard。
+- [completed] 用 main 设置完成候选打分、baseline/adversarial selection 和 distill dataset 构建。
+- [completed] 增强 dataset summary，报告 candidate-level 与 sample-level 的 empty/extractable/valid/correct/truncated、selected-candidate quality、长度分布、NLL gap、fallback rate 和 baseline/adversarial 选中差异率。
+- [completed] 训练前确认 baseline/adversarial 数据长度、正确率和截断率差异可解释；若数据质量明显异常，停在数据侧并记录原因。
+- [completed] 数据质量通过后，分别训练 `teacher_baseline` 和 `teacher_adversarial`，保持相同 Student 初始化和训练超参数。
+- [completed] 对训练 checkpoint 执行 checkpoint eval，并对最终 checkpoint 执行 final eval。
+- [completed] 运行 plot curves，产出 baseline/adversarial 的训练曲线、checkpoint eval 曲线、final eval 对比图及底层数据。
+
+## Result Note
+
+2026-05-10 已跑完 DeepScaleR main8000 response-level 预实验剩余链路。产物目录：
+
+- data/analysis：`result/pre_exp/analysis/deepscaler_main8000_k8_t0.9_p0.85_len4096`
+- training：`/home/disk2/shiyixuan/pre_exp_runs/deepscaler_main8000_k8_t0.9_p0.85_len4096`
+- summary：`result/pre_exp/analysis/deepscaler_main8000_k8_t0.9_p0.85_len4096/run_summary.md`
+
+关键结果：
+
+- 数据侧 sanity 通过：candidate 截断率 7.24%，score 截断率 0%，baseline/adversarial 选中不同候选 87.71%，平均 Student NLL gap +0.0714。
+- 训练口径调整为 `TRAIN_MAX_LENGTH=5120`；checkpoint eval 使用 DeepScaleR holdout 1024 条，final eval 使用 DeepScaleR holdout 4096 条，均排除 seed-42 main8000 训练子集。
+- final rollout acc：`teacher_baseline` 37.43%，`teacher_adversarial` 36.47%，adversarial 低 0.95 个百分点。
 
 ## Acceptance Criteria
 
