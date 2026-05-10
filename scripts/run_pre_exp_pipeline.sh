@@ -2,14 +2,11 @@
 
 set -euo pipefail
 
-# 这个脚本把 DeepScaleR 正式预实验链路串起来：
-# teacher_generate -> student_score -> select_candidates -> build_distill_dataset
-# -> analyze_dataset -> train -> checkpoint_eval -> final_eval -> plot_curves
+# DeepScaleR main8000 response-level 预实验流水线：
+# data side -> analysis -> SFT -> checkpoint eval -> final eval -> curves
 #
-# 设计目标：
-# 1. 后续你自己复现实验时，只需要改顶部变量，不需要手工拼很多命令。
-# 2. 默认沿用当前项目已经验证过的 DeepScaleR smoke 配置。
-# 3. 重要参数都在脚本里加中文注释，方便回看“为什么当时这么设”。
+# main8000 数据侧已经完成，所以默认跳过 teacher generate / score / select，
+# 只跑剩余分析、训练、DeepScaleR holdout 评测和绘图。
 
 
 ###############################################################################
@@ -21,18 +18,12 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${PROJECT_ROOT}"
 
 # 固定使用 vLLM 0.8.5 的 V0 engine。
-# 这是本项目当前冻结的实验口径。
 export VLLM_USE_V1=0
 
-# 在这台服务器上，8 卡 vLLM 默认多进程方式会触发
-# “Cannot re-initialize CUDA in forked subprocess”。
-# 显式改成 spawn 可以稳定启动多卡 vLLM。
+# 避免 vLLM 多进程 fork 后重新初始化 CUDA。
 export VLLM_WORKER_MULTIPROC_METHOD=spawn
 
-# 一些 PyTorch / Triton 的运行时会在首次编译 CUDA helper 时走到
-# `gcc ... -lcuda` 这条链路；服务器默认库路径里往往只有 `libcuda.so.1`，
-# 缺少链接阶段需要的无版本名 `libcuda.so`。
-# 这里补上 driver stub 所在目录，属于很常见的“只影响编译期搜索路径”的修复范式。
+# 给 Triton/PyTorch 编译 CUDA helper 时补上 libcuda 链接路径。
 export LIBRARY_PATH="/usr/lib/x86_64-linux-gnu/stubs${LIBRARY_PATH:+:${LIBRARY_PATH}}"
 
 # 减少多进程场景下 CPU 线程争抢。
@@ -47,23 +38,19 @@ export PYTHONUNBUFFERED=1
 TEACHER_MODEL="/home/disk1/public_checkpoint/Qwen3-8B"
 STUDENT_MODEL="/home/disk1/public_checkpoint/Qwen3-1.7B"
 
-# 这次是较大规模的数据侧预实验，不再沿用 smoke 目录，
-# 避免把已经跑好的 128-sample smoke 结果覆盖掉。
 EXPERIMENT_NAME="deepscaler_main8000_k8_t0.9_p0.85_len4096"
 RESULT_ROOT="result/pre_exp"
 CANDIDATE_DIR="${RESULT_ROOT}/candidates/${EXPERIMENT_NAME}"
 DATASET_DIR="${RESULT_ROOT}/datasets/${EXPERIMENT_NAME}"
 SELECTION_DIR="${DATASET_DIR}/selections"
-# 训练产物（中间 checkpoint / final checkpoint / train.log）显著更占空间，
-# 这里单独放到 /home/disk2/shiyixuan，避免把仓库所在磁盘写满。
+# 训练 checkpoint 较大，放到 /home/disk2，避免写满仓库所在磁盘。
 RUN_DIR="/home/disk2/shiyixuan/pre_exp_runs/${EXPERIMENT_NAME}"
 ANALYSIS_DIR="${RESULT_ROOT}/analysis/${EXPERIMENT_NAME}"
 LOG_DIR="${ANALYSIS_DIR}/logs"
 
 mkdir -p "${CANDIDATE_DIR}" "${DATASET_DIR}" "${SELECTION_DIR}" "${ANALYSIS_DIR}" "${LOG_DIR}"
 
-# 默认拒绝覆盖已经存在且非空的重要产物，避免长任务误重跑时把结果冲掉。
-# 确认要重跑某个阶段时，在命令前显式加 `ALLOW_OVERWRITE=1`。
+# 默认拒绝覆盖非空产物；确认重跑某阶段时显式设置 ALLOW_OVERWRITE=1。
 ALLOW_OVERWRITE="${ALLOW_OVERWRITE:-0}"
 
 
@@ -80,28 +67,19 @@ ANSWER_FIELD="answer"
 MAX_SAMPLES=8000
 SUBSET_SEED=42
 
-# Teacher 每题采 8 个候选，这是当前 response-level 预实验的核心设置。
 NUM_CANDIDATES=8
 TEMPERATURE=0.9
 TOP_P=0.85
 
 GEN_MAX_NEW_TOKENS=4096
 
-# prompt_batch_size 是“每个 TP=1 副本”一次送进 vLLM 的 prompt 数。
-# 多副本并行后，总吞吐来自多个单卡 engine 同时推进，不再依赖一个 TP=8 engine。
+# 每个 TP=1 Teacher 副本一次送入 vLLM 的 prompt 数。
 GEN_PROMPT_BATCH_SIZE=64
 
-# max_num_seqs 控制 vLLM scheduler 同时维护的序列数。
-# 这是吞吐相关参数，不是“总共生成多少条”的参数：
-# - 太小：GPU 并行度吃不满，teacher generate 会非常慢。
-# - 太大：KV cache 压力更高，可能 OOM。
-# 128 是 vLLM 0.8.5 的常见默认量级，适合作为单卡 Qwen3-8B 副本的起点。
+# vLLM scheduler 同时维护的序列数；太大会增加 KV cache 压力。
 GEN_MAX_NUM_SEQS=128
 
-# save_every_prompts 控制增量落盘频率。
-# 这里直接和每个副本的 prompt_batch_size 对齐成 64，属于长任务里很常见的稳妥范式：
-# - 每完成一个 outer batch 就落一次盘
-# - 中途被打断时，最多只损失当前 batch 的结果
+# 每个 outer batch 落盘一次，便于长任务中断后排查。
 SAVE_EVERY_PROMPTS=64
 
 
@@ -109,18 +87,13 @@ SAVE_EVERY_PROMPTS=64
 # Student 打分参数
 ###############################################################################
 
-# 打分是前向算 NLL，不需要多卡；默认单卡即可。
-# 这里把物理 GPU 和进程内 device 分开写，是一个很常见也很实用的范式：
-# - `CUDA_VISIBLE_DEVICES=5` 决定“这个进程实际上只能看到哪张物理卡”
-# - 进程内部再用 `cuda:0`，表示“当前可见设备里的第 0 张”
-# 这样可以稳定避开服务器上已经被别人占用的物理 GPU0。
+# Student NLL 打分只需单卡；物理卡由 CUDA_VISIBLE_DEVICES 控制。
 SCORE_VISIBLE_DEVICES="5"
 SCORE_DEVICE="cuda:0"
 SCORE_BATCH_SIZE=4
 SCORE_MAX_LENGTH=8192
 
 # Student 打分和 SFT 使用 Transformers/PyTorch，不走 vLLM。
-# 当前 Qwen3 + Transformers 环境支持 flash_attention_2，长上下文 NLL 打分会明显受益。
 HF_ATTN_IMPLEMENTATION="flash_attention_2"
 
 
@@ -128,15 +101,12 @@ HF_ATTN_IMPLEMENTATION="flash_attention_2"
 # Teacher 生成资源
 ###############################################################################
 
-# Qwen3-8B 单卡即可放下。这里用 TP=1 的多副本并行替代 TP=8：
-# - 每张卡各跑一个完整 Teacher 副本，避免 tensor parallel 通信拖慢长生成
-# - teacher_generate.py 用 deterministic shard 切分样本，最后合并 JSONL
+# Teacher generation 用 TP=1 多副本，每张卡跑一个 shard。
 TEACHER_REPLICA_GPU_IDS=(0 1 2 3 4 5 6 7)
 TEACHER_TP_SIZE=1
 TEACHER_NUM_REPLICAS=${#TEACHER_REPLICA_GPU_IDS[@]}
 
-# 大规模 teacher generate 优先关闭 enforce-eager，让 vLLM 使用 CUDA graph。
-# 若遇到 CUDA graph capture OOM、卡死或静态图相关异常，把这里改成 1 可快速回退。
+# 默认允许 vLLM CUDA graph；遇到 capture 相关问题时改成 1。
 TEACHER_ENFORCE_EAGER=0
 TEACHER_EAGER_ARG=""
 if [[ "${TEACHER_ENFORCE_EAGER}" == "1" ]]; then
@@ -151,21 +121,16 @@ fi
 TRAIN_GPU_IDS="0,1,2,3,4,5,6,7"
 TRAIN_NPROC=8
 
-# max_steps 现在是训练预算的一等公民。
-# 当前 8000 条训练样本、8 卡、per-device batch size=2 时，
-# global batch size = 8 * 2 = 16；
-# 因此 1000 step 大约对应 8000 / 16 = 500 step/epoch，也就是约 2 个 epoch。
-# 这个预算足够拉开 baseline / adversarial 的学习曲线，又不会把训练拖得过长。
+# 8000 样本、8 卡、per-device batch=2 时，1000 step 约等于 2 个 epoch。
 MAX_STEPS="${MAX_STEPS:-1000}"
 EVAL_EVERY="${EVAL_EVERY:-200}"
 CHECKPOINT_EVERY="${CHECKPOINT_EVERY:-200}"
 MAX_CHECKPOINTS_TO_KEEP="${MAX_CHECKPOINTS_TO_KEEP:-5}"
 
-# main8000 distill 样本的 full length 中位数约 1.27k，p95 约 4.2k。
-# 5120 基本覆盖本轮样本，避免 700 长度设置只学到 response 开头。
+# main8000 full length p95 约 4.2k；5120 基本覆盖本轮样本。
 TRAIN_MAX_LENGTH="${TRAIN_MAX_LENGTH:-5120}"
 
-# DeepScaleR 推理链比 GSM8K 长很多；rollout eval 对齐 Teacher 生成上限。
+# DeepScaleR 推理链较长；rollout eval 对齐 Teacher 生成上限。
 ROLLOUT_MAX_NEW_TOKENS="${ROLLOUT_MAX_NEW_TOKENS:-4096}"
 
 TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-2}"
@@ -181,8 +146,7 @@ TRAIN_SEED="${TRAIN_SEED:-42}"
 ###############################################################################
 
 EVAL_ENGINE="vllm"
-# Qwen3-1.7B 单卡可以完整承载 eval engine；TP=1 可以避免不必要通信。
-# checkpoint eval 会把多个 checkpoint 分配到不同 GPU 上并行跑。
+# Qwen3-1.7B eval 单卡足够；checkpoint eval 在脚本层按 GPU 并行调度。
 EVAL_GPU_IDS="${EVAL_GPU_IDS:-0,1,2,3,4,5,6,7}"
 IFS=',' read -r -a EVAL_GPU_ID_LIST <<< "${EVAL_GPU_IDS}"
 EVAL_TP_SIZE="${EVAL_TP_SIZE:-1}"
@@ -190,10 +154,8 @@ EVAL_MAX_MODEL_LEN="${EVAL_MAX_MODEL_LEN:-8192}"
 EVAL_MAX_NUM_SEQS="${EVAL_MAX_NUM_SEQS:-32}"
 EVAL_GPU_MEMORY_UTILIZATION="${EVAL_GPU_MEMORY_UTILIZATION:-0.85}"
 
-# 固定 1024 条 DeepScaleR holdout 子集，用来看 checkpoint 学习曲线。
 CHECKPOINT_EVAL_MAX_SAMPLES="${CHECKPOINT_EVAL_MAX_SAMPLES:-1024}"
 
-# final eval 跑更大的 DeepScaleR holdout 子集，作为本轮主结论。
 FINAL_EVAL_MAX_SAMPLES="${FINAL_EVAL_MAX_SAMPLES:-4096}"
 
 # DeepScaleR 只有 train split；holdout 定义为排除 main8000 训练子集后的剩余样本。
@@ -205,22 +167,36 @@ EVAL_ANSWER_FIELD="${EVAL_ANSWER_FIELD:-${ANSWER_FIELD}}"
 EVAL_EXCLUDE_MAX_SAMPLES="${EVAL_EXCLUDE_MAX_SAMPLES:-${MAX_SAMPLES}}"
 EVAL_EXCLUDE_SEED="${EVAL_EXCLUDE_SEED:-${SUBSET_SEED}}"
 
-# trainer 的 val_loss/ppl 使用固定的 DeepScaleR holdout JSONL，避免每次 eval 扫全量 40k。
+# trainer val_loss/ppl 使用固定 holdout JSONL，避免每次 eval 扫全量 40k。
 HOLDOUT_EVAL_MAX_SAMPLES="${HOLDOUT_EVAL_MAX_SAMPLES:-1024}"
 HOLDOUT_EVAL_COMPLETION_FIELD="${HOLDOUT_EVAL_COMPLETION_FIELD:-solution}"
 HOLDOUT_EVAL_FILE="${DATASET_DIR}/deepscaler_holdout_eval_${HOLDOUT_EVAL_MAX_SAMPLES}_seed${SUBSET_SEED}.jsonl"
 HOLDOUT_EVAL_SUMMARY_FILE="${HOLDOUT_EVAL_FILE%.jsonl}.summary.json"
+
+EVAL_COMMON_ARGS=(
+  --engine "${EVAL_ENGINE}"
+  --dataset-name "${EVAL_DATASET_NAME}"
+  --dataset-config-name "${EVAL_DATASET_CONFIG_NAME}"
+  --split "${EVAL_SPLIT}"
+  --question-field "${EVAL_QUESTION_FIELD}"
+  --answer-field "${EVAL_ANSWER_FIELD}"
+  --exclude-subset-max-samples "${EVAL_EXCLUDE_MAX_SAMPLES}"
+  --exclude-subset-seed "${EVAL_EXCLUDE_SEED}"
+  --subset-seed "${SUBSET_SEED}"
+  --max-new-tokens "${ROLLOUT_MAX_NEW_TOKENS}"
+  --tensor-parallel-size "${EVAL_TP_SIZE}"
+  --max-model-len "${EVAL_MAX_MODEL_LEN}"
+  --max-num-seqs "${EVAL_MAX_NUM_SEQS}"
+  --gpu-memory-utilization "${EVAL_GPU_MEMORY_UTILIZATION}"
+  --trust-remote-code
+)
 
 
 ###############################################################################
 # 阶段开关
 ###############################################################################
 
-# 这些开关方便你重跑局部阶段。
-# 例如只想重跑分析，可以把前面都改成 0，只保留 RUN_ANALYZE_DATASET=1。
-# 现在 8000 条 main 数据已经产出后，可以用下面这种方式只启动训练：
-# RUN_TEACHER_GENERATE=0 RUN_STUDENT_SCORE=0 RUN_SELECT_AND_BUILD=0 RUN_ANALYZE_DATASET=0 RUN_TRAIN=1 bash scripts/run_pre_exp_pipeline.sh
-# main8000 数据侧已经产出，默认只跑剩余分析、训练和评测阶段。
+# 阶段开关：默认跳过已完成的数据侧，直接跑剩余 main8000 链路。
 RUN_TEACHER_GENERATE="${RUN_TEACHER_GENERATE:-0}"
 RUN_STUDENT_SCORE="${RUN_STUDENT_SCORE:-0}"
 RUN_SELECT_AND_BUILD="${RUN_SELECT_AND_BUILD:-0}"
@@ -228,7 +204,6 @@ RUN_ANALYZE_DATASET="${RUN_ANALYZE_DATASET:-1}"
 RUN_BUILD_HOLDOUT_EVAL="${RUN_BUILD_HOLDOUT_EVAL:-1}"
 RUN_TRAIN="${RUN_TRAIN:-1}"
 
-# checkpoint 子集评测不是必须，但对看学习曲线很有帮助。
 RUN_CHECKPOINT_EVAL="${RUN_CHECKPOINT_EVAL:-1}"
 RUN_FINAL_EVAL="${RUN_FINAL_EVAL:-1}"
 RUN_PLOT_CURVES="${RUN_PLOT_CURVES:-1}"
@@ -488,23 +463,9 @@ checkpoint_eval_one_mode() {
     (
       CUDA_VISIBLE_DEVICES="${gpu_id}" \
       ${CONDA_RUN} python src/pre_exp/final_eval.py \
-        --engine "${EVAL_ENGINE}" \
+        "${EVAL_COMMON_ARGS[@]}" \
         --model-name-or-path "${checkpoint_dir}" \
-        --dataset-name "${EVAL_DATASET_NAME}" \
-        --dataset-config-name "${EVAL_DATASET_CONFIG_NAME}" \
-        --split "${EVAL_SPLIT}" \
-        --question-field "${EVAL_QUESTION_FIELD}" \
-        --answer-field "${EVAL_ANSWER_FIELD}" \
-        --exclude-subset-max-samples "${EVAL_EXCLUDE_MAX_SAMPLES}" \
-        --exclude-subset-seed "${EVAL_EXCLUDE_SEED}" \
         --max-samples "${CHECKPOINT_EVAL_MAX_SAMPLES}" \
-        --subset-seed "${SUBSET_SEED}" \
-        --max-new-tokens "${ROLLOUT_MAX_NEW_TOKENS}" \
-        --tensor-parallel-size "${EVAL_TP_SIZE}" \
-        --max-model-len "${EVAL_MAX_MODEL_LEN}" \
-        --max-num-seqs "${EVAL_MAX_NUM_SEQS}" \
-        --gpu-memory-utilization "${EVAL_GPU_MEMORY_UTILIZATION}" \
-        --trust-remote-code \
         --output-file "${checkpoint_output}" \
         > "${checkpoint_log}" 2>&1
     ) &
@@ -535,30 +496,13 @@ final_eval_one_mode() {
   guard_output_file "${output_file%.json}.records.jsonl"
   guard_output_file "${LOG_DIR}/final_eval_${mode}.log"
 
-  # final eval 使用 DeepScaleR holdout，排除 main8000 训练子集。
-  run_cmd bash -lc "
-    CUDA_VISIBLE_DEVICES=${gpu_id} \
+  run_cmd env CUDA_VISIBLE_DEVICES="${gpu_id}" \
     ${CONDA_RUN} python src/pre_exp/final_eval.py \
-      --engine ${EVAL_ENGINE} \
-      --model-name-or-path ${RUN_DIR}/${mode}/final_checkpoint \
-      --dataset-name ${EVAL_DATASET_NAME} \
-      --dataset-config-name ${EVAL_DATASET_CONFIG_NAME} \
-      --split ${EVAL_SPLIT} \
-      --question-field ${EVAL_QUESTION_FIELD} \
-      --answer-field ${EVAL_ANSWER_FIELD} \
-      --exclude-subset-max-samples ${EVAL_EXCLUDE_MAX_SAMPLES} \
-      --exclude-subset-seed ${EVAL_EXCLUDE_SEED} \
-      --max-samples ${FINAL_EVAL_MAX_SAMPLES} \
-      --subset-seed ${SUBSET_SEED} \
-      --max-new-tokens ${ROLLOUT_MAX_NEW_TOKENS} \
-      --tensor-parallel-size ${EVAL_TP_SIZE} \
-      --max-model-len ${EVAL_MAX_MODEL_LEN} \
-      --max-num-seqs ${EVAL_MAX_NUM_SEQS} \
-      --gpu-memory-utilization ${EVAL_GPU_MEMORY_UTILIZATION} \
-      --trust-remote-code \
-      --output-file ${output_file} \
-      > ${LOG_DIR}/final_eval_${mode}.log 2>&1
-  "
+      "${EVAL_COMMON_ARGS[@]}" \
+      --model-name-or-path "${RUN_DIR}/${mode}/final_checkpoint" \
+      --max-samples "${FINAL_EVAL_MAX_SAMPLES}" \
+      --output-file "${output_file}" \
+      > "${LOG_DIR}/final_eval_${mode}.log" 2>&1
 }
 
 plot_curves() {
@@ -687,7 +631,7 @@ fi
 
 
 ###############################################################################
-# 阶段 G: 最终 full test 评测
+# 阶段 G: 最终 DeepScaleR holdout 评测
 ###############################################################################
 
 if [[ "${RUN_FINAL_EVAL}" == "1" ]]; then
