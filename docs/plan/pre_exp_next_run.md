@@ -52,7 +52,7 @@
 - 有任一截断候选的题目：29/128
 - 8 个候选全被截断的题目：0/128
 
-在完整 Teacher 分布 selection policy 下：
+在旧完整 Teacher 分布 selection policy 下：
 
 - baseline selected correct rate：39.1%
 - adversarial selected correct rate：25.8%
@@ -64,7 +64,7 @@
 - adversarial 平均 completion token 数：814.6
 - Student score 阶段 `score_truncated`：0/1024
 
-结论：`max_new_tokens=4096` 基本解决了上一轮 smoke 的严重截断问题，且 adversarial selection 能稳定选到与 baseline 不同、Student NLL 更高的候选。需要注意的是，在完整 Teacher 分布蒸馏口径下，adversarial 选中样本正确率低于 baseline，后续训练曲线差异必须结合 selected-candidate correctness / truncation 一起解释。
+结论：`max_new_tokens=4096` 基本解决了上一轮 smoke 的严重截断问题，且 adversarial selection 能稳定选到与 baseline 不同、Student NLL 更高的候选。旧完整 Teacher 分布口径下 adversarial 选中样本正确率低于 baseline，因此后续改用 correctness-matched adversarial selection，把 selected correctness 差异从主要混杂因素中移除。
 
 ## Recommended Main Settings
 
@@ -89,8 +89,8 @@ MAX_MODEL_LEN=8192
 
 ## Required Code/Policy Check Before Training
 
-- selection policy 已从“正确且未截断候选内重排”改为“完整 Teacher 分布蒸馏”：baseline 选第一条 Teacher 候选，adversarial 选 Student NLL 最大候选。
-- `is_correct`、`is_valid_candidate`、截断状态仍需报告，但只作为解释变量，不作为 selection filter。
+- selection policy 已改为 correctness-matched adversarial selection：baseline 选第一条 Teacher 候选；adversarial 先匹配 baseline 所选候选的 `is_correct`，再在同正确性候选中选 Student NLL 最大候选。
+- `is_valid_candidate`、截断状态仍需报告，但只作为解释变量，不作为 selection filter；`is_correct` 用于 selection 分桶并继续报告 selected correctness。
 - 数据分析应报告 candidate-level、sample-level、valid/correct、截断率、selected-candidate 正确率和 NLL gap。
 - 如果截断率仍过高，训练结论需要谨慎解释，因为 Student 学到的是 Teacher 的完整输出分布，其中包含截断与错误样本。
 
@@ -99,4 +99,4 @@ MAX_MODEL_LEN=8192
 - 截断候选比例显著低于 smoke。
 - baseline/adversarial 的 NLL gap 保持正值，且两组选中不同候选的样本占比不太低。
 - baseline/adversarial 的长度分布接近，避免 adversarial 差异主要由长度解释。
-- 两组选中样本的正确率、截断率差异可解释，避免把训练差异误读为纯 anti-distillation 信号。
+- 两组选中样本的正确率应对齐；截断率和 valid 差异需可解释，避免把训练差异误读为纯 anti-distillation 信号。

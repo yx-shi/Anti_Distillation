@@ -67,13 +67,22 @@ def build_selection_record(
     }
 
 
-def choose_adversarial(candidates: list[dict[str, Any]]) -> dict[str, Any]:
-    scoreable_candidates = [item for item in candidates if item.get("student_mean_nll") is not None]
+def choose_adversarial(
+    candidates: list[dict[str, Any]],
+    *,
+    baseline_selected: dict[str, Any],
+) -> dict[str, Any]:
+    baseline_correct = bool(baseline_selected.get("is_correct", False))
+    scoreable_candidates = [
+        item
+        for item in candidates
+        if item.get("student_mean_nll") is not None and bool(item.get("is_correct", False)) == baseline_correct
+    ]
     if not scoreable_candidates:
-        raise ValueError("No scoreable candidate is available for adversarial selection.")
+        raise ValueError("No scoreable candidate with baseline correctness is available for adversarial selection.")
 
-    # 完整 Teacher 分布蒸馏口径：不按正误、截断或可抽取性过滤，只选择
-    # Student completion-token mean NLL 最大的 Teacher 样本。
+    # 为了让 baseline/adversarial 选中数据集的正确率对齐，先按 baseline
+    # 选中候选的正确性分桶，再在同一桶内选择 Student mean NLL 最大的样本。
     # 如果 NLL 并列，再按 candidate_id 升序打破平局，保证结果可复现。
     return max(
         scoreable_candidates,
@@ -110,13 +119,13 @@ def main() -> None:
         )
 
         try:
-            adversarial_selected = choose_adversarial(candidates)
+            adversarial_selected = choose_adversarial(candidates, baseline_selected=baseline_selected)
             adversarial_fallback_reason = ""
         except ValueError:
-            # 理论上只有所有 Teacher completion 都为空时才会触发。此时没有 NLL
-            # 可比较，退回到第一条 Teacher 样本以保持数据规模对齐。
+            # 没有同 correctness 桶内可比较的 NLL 时，退回到第一条 Teacher
+            # 样本以保持数据规模和 selected correctness 与 baseline 对齐。
             adversarial_selected = baseline_selected
-            adversarial_fallback_reason = "no_scoreable_candidate"
+            adversarial_fallback_reason = "no_scoreable_matching_correctness"
 
         adversarial_records.append(
             build_selection_record(

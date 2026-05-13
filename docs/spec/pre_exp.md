@@ -45,7 +45,7 @@ GSM8K 预实验显示任务偏简单，后续实验转向 `agentica-org/DeepScal
 - `max_new_tokens=4096`
 - `max_model_len=8192`
 - `score_max_length=8192`
-- selection policy 已切换为完整 Teacher 分布蒸馏：baseline 选 Teacher 第一条候选，adversarial 选 Student NLL 最大候选，不按 Teacher 正误或候选有效性过滤
+- selection policy 已切换为 correctness-matched adversarial selection：baseline 选 Teacher 第一条候选；adversarial 先匹配 baseline 选中候选的 `is_correct`，再在同正确性候选里选 Student NLL 最大者，不按 valid/truncation 过滤
 
 DeepScaleR smoke 与 main 参数依据见 `../plan/pre_exp_next_run.md`。
 
@@ -140,9 +140,9 @@ Teacher 候选生成阶段固定使用：
 3. 使用现有 `grading` 管线尝试提取最终答案。
 4. 使用 gold answer 标记 `is_correct`。
 
-这些字段只用于数据分析和实验解释，不再作为 selection filter。当前 response-level 实验的目标是让 Student 学 Teacher 的完整采样分布，而不是只学 Teacher 正确且格式良好的子分布。
+除 `is_correct` 用于让 adversarial 与 baseline 的 selected correctness 对齐外，这些字段只用于数据分析和实验解释，不再作为 selection filter。当前 response-level 实验的目标是避免 baseline/adversarial 正确率差距成为主要混杂因素，同时仍让 adversarial 在可比质量桶内选择 Student 更难拟合的 Teacher response。
 
-只有当同一题所有候选都没有可计算 NLL 的非空 completion 时，`teacher_adversarial` 才回退到 baseline 并写入 `fallback_reason=no_scoreable_candidate`。质量字段必须在 selection 和 distill 数据中保留，便于后续解释训练曲线差异。
+只有当同一题中与 baseline `is_correct` 相同的候选都没有可计算 NLL 的非空 completion 时，`teacher_adversarial` 才回退到 baseline 并写入 `fallback_reason=no_scoreable_matching_correctness`。质量字段必须在 selection 和 distill 数据中保留，便于后续解释训练曲线差异。
 
 ### 阶段 C：Student 打分
 
@@ -188,13 +188,15 @@ Student 打分使用 `transformers + torch`，不使用 vLLM。原因是：
 
 #### `teacher_adversarial`
 
-- 在所有可计算 NLL 的 Teacher 候选中选择 `student_mean_nll` **最高**的那个
-- 不考虑该候选是否正确、是否截断、是否可抽取答案
-- 如果所有候选都无法计算 NLL，则回退到 `teacher_baseline`
+- 先读取 `teacher_baseline` 所选第一条候选的 `is_correct`
+- 如果 baseline 选对了，则只在正确候选中选择 `student_mean_nll` **最高**的那个
+- 如果 baseline 选错了，则只在错误候选中选择 `student_mean_nll` **最高**的那个
+- 不按截断或可抽取性过滤；这些字段继续作为分析变量保留
+- 如果同正确性桶内所有候选都无法计算 NLL，则回退到 `teacher_baseline`
 
-这样定义后，`teacher_adversarial` 和 `teacher_baseline` 的核心差异就只剩：
+这样定义后，`teacher_adversarial` 和 `teacher_baseline` 的核心差异变成：
 
-> 给定同一批 Teacher 原始采样候选，是否故意选 Student 最难拟合的那一个。
+> 给定同一批 Teacher 原始采样候选，并固定 selected correctness，是否故意选 Student 最难拟合的那一个。
 
 ## 6. 数据规模与运行分层
 
@@ -296,7 +298,7 @@ src/pre_exp/
 
 - `messages` 保存 chat template 的结构化输入，便于后续复现 prompt 构造。
 - `prompt_text` 保存最终渲染后的文本，便于人工抽查和跨框架调试。
-- selection 阶段通常不写 fallback；只有 adversarial 遇到无可打分候选时才写 `no_scoreable_candidate`。
+- selection 阶段通常不写 fallback；只有 adversarial 在同正确性桶内遇到无可打分候选时才写 `no_scoreable_matching_correctness`。
 
 ### 8.2 `scored_candidates.jsonl`
 
@@ -474,7 +476,7 @@ checkpoint eval 至少记录：
 本轮预实验达到以下条件，可认为方案成立并值得继续扩展：
 
 1. smoke run 可以端到端跑通，不需要人工插入临时补丁。
-2. main run 中，adversarial 数据没有导致候选正确率明显塌陷。
+2. main run 中，baseline/adversarial selected correctness 对齐，且 adversarial 数据没有导致截断率或无效候选比例明显塌陷。
 3. `teacher_adversarial` 组在相同训练预算下，`rollout_acc` 提升明显慢于 `teacher_baseline` 组。
 4. 这种差异不能主要由 response 崩坏或长度极端膨胀解释。
 
@@ -497,12 +499,12 @@ checkpoint eval 至少记录：
 
 说明：
 
-- 完整 Teacher 分布蒸馏口径下，selection 不按正误过滤
-- Student NLL 排序压过了任务质量约束
+- correctness-matched selection 只控制 selected correctness，不控制截断、可抽取性和 response 形态
+- Student NLL 排序仍可能压过其它任务质量约束
 
 优先动作：
 
-- 同时报告 selected-candidate correctness / truncation，必要时调整 Teacher 生成参数或单独设计质量约束实验
+- 同时报告 selected-candidate correctness / valid / truncation，必要时调整 Teacher 生成参数或单独设计更强质量约束实验
 
 #### 失败信号 3：baseline 与 adversarial 几乎没有差异
 

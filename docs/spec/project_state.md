@@ -8,7 +8,7 @@
 
 当前采用两条路线：
 
-- response-level 预实验：Teacher 对同一题生成多个候选；baseline 选第一条候选，adversarial 在可打分候选中选择 Student 平均 NLL 最高的候选，不按正确性或有效性过滤。
+- response-level 预实验：Teacher 对同一题生成多个候选；baseline 选第一条候选，adversarial 先匹配 baseline 所选候选的正确性，再在同正确性候选中选择 Student 平均 NLL 最高的可打分候选。
 - token-level adversarial decoding：修改 vLLM，使 Teacher 和 Student 在同一 prefix 上共同 forward，并在 token 级别选择对 Student 更难的 next token；hard/soft 首版已在 vLLM-dual 路径实现并通过 smoke。
 
 ## Current Code Layout
@@ -45,6 +45,8 @@
 - GSM8K 预实验显示任务偏简单，Student base 正确率较高，蒸馏提升和 adversarial 差异不明显。
 - DeepScaleR response-level main8000 预实验已完成：8000 samples、`k=8`、`temperature=0.9`、`top_p=0.85`、`max_new_tokens=4096`、`max_model_len/score_max_length=8192`。
 - main8000 训练使用 `TRAIN_MAX_LENGTH=5120`、8 卡 FSDP、1000 step；rollout eval 使用 DeepScaleR holdout，排除 seed-42 main8000 训练子集。final 4096-sample holdout acc：`teacher_baseline` 37.43%，`teacher_adversarial` 36.47%。结果摘要见 `result/pre_exp/analysis/deepscaler_main8000_k8_t0.9_p0.85_len4096/run_summary.md`。
+- 2026-05-13 已复用 main8000 scored candidates 跑通 correctness-matched 数据侧，不启动训练。新产物目录：`result/pre_exp/datasets/deepscaler_main8000_k8_t0.9_p0.85_len4096_correctness_matched` 和 `result/pre_exp/analysis/deepscaler_main8000_k8_t0.9_p0.85_len4096_correctness_matched`。selected correctness 已对齐：baseline/adversarial 均为 54.85%，逐样本 correctness mismatch 为 0，平均 Student NLL gap 为 +0.06155。
+- 2026-05-13 correctness-matched 两组 SFT 训练、checkpoint eval、final eval 和曲线绘制已完成。训练输出目录：`/home/disk2/shiyixuan/pre_exp_runs/deepscaler_main8000_k8_t0.9_p0.85_len4096_correctness_matched`。结果摘要见 `result/pre_exp/analysis/deepscaler_main8000_k8_t0.9_p0.85_len4096_correctness_matched/run_summary.md`。训练内 val_loss/ppl：baseline 0.2591 / 1.2958，adversarial 0.2495 / 1.2834。final 4096-sample holdout acc：baseline 35.99%，adversarial 37.55%，adversarial 高 1.56 个百分点。
 - vLLM-dual 当前只完成 worker-level hard/soft smoke，尚未完成 candidate -> dataset -> SFT -> eval 的 full smoke。
 
 ## Maintenance Rule

@@ -37,7 +37,7 @@ DeepScaleR 字段：
 - `student_mean_nll`：Student 对 completion token 的平均 NLL。
 - `student_token_count`：用于 NLL 的 completion token 数。
 
-当前 response-level selection policy 不再使用这些质量字段做过滤。baseline 始终选择 Teacher 第一条候选；adversarial 始终选择可计算 NLL 的候选中 `student_mean_nll` 最大的一条。质量字段保留用于解释 Teacher 分布、截断率、正确率和训练后结果，而不是把训练数据裁成“正确且有效”的子分布。
+当前 response-level selection policy 使用 `is_correct` 对齐 baseline/adversarial 的 selected correctness：baseline 始终选择 Teacher 第一条候选；adversarial 先匹配 baseline 所选候选的 `is_correct`，再在同正确性候选中选择可计算 NLL 且 `student_mean_nll` 最大的一条。`is_valid_candidate`、截断状态和其它质量字段保留用于解释 Teacher 分布、截断率、正确率和训练后结果，不作为 selection filter。
 
 ## Token-Level Decoding Outputs
 
