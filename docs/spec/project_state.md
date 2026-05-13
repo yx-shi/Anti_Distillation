@@ -14,6 +14,7 @@
 ## Current Code Layout
 
 - `src/pre_exp/`：预实验数据侧、候选打分、候选选择、数据分析和最终评测脚本。
+- `src/vllm_dual_decoding/`：vLLM-dual token-level data-side smoke 的独立生成、打分和分析入口。
 - `src/sft/`：SFT 训练框架，使用 Transformers + PyTorch/FSDP。
 - `src/train_sft.py`：SFT 训练入口。
 - `grading/`：数学题答案抽取和判分逻辑。
@@ -38,7 +39,7 @@
 - 已了解 vLLM V0 的关键概念：batch inference、prefill、decoding、scheduler、paged attention、swap 等。
 - 已启动 vLLM-dual 修改方向，重点文件包括 worker、arg_utils 和 config 相关逻辑。
 - 已实现 vLLM-dual hard/soft token-level adversarial decoding 首版：显式 `dual_model_config` 才启用，普通 vLLM 路径保持默认 worker。
-- 已归档 vLLM-dual token-level decoding 实现任务；下一步活跃任务是把 hard/soft 接入现有 `src/pre_exp/` 框架并跑完整 smoke。
+- 已归档 vLLM-dual token-level decoding 实现任务；下一步活跃任务是建设与 `src/pre_exp/` 并列的独立 token-level 链路。当前先准备并运行 data-side smoke，数据质量达标后再扩展到完整 SFT/eval smoke。
 
 ## Current Experimental State
 

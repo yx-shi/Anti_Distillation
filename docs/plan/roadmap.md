@@ -22,11 +22,11 @@
 
 1. 用 DeepScaleR 重跑更高质量的 response-level 预实验。
 2. 根据数据质量与训练结果判断 response-level 方法是否有可观测 anti-distillation 信号。
-3. 将 vLLM-dual hard/soft decoding 接入现有 `src/pre_exp/` 框架，跑完整 smoke：生成、质量分析、SFT、小规模 eval。
+3. 建设与 `src/pre_exp/` 并列的 vLLM-dual token-level 实验链路；当前先完成 worker smoke 复验和 data-side smoke：生成、质量分析、Student NLL 打分，数据质量达标后再跑 SFT 与小规模 eval。
 
 ## Next Decisions
 
 - DeepScaleR 主实验的样本规模、生成长度和采样参数。
 - selection policy 是否严格排除截断候选。
-- vLLM-dual full smoke 的最小数据规模、Teacher/Student 组合、输出 schema 和训练预算。
+- vLLM-dual data-side smoke 的数据质量是否足以进入 full smoke，以及后续 full smoke 的训练预算。
 - token-level hard/soft 结果如何与 response-level baseline/adversarial 结果做可比分析。

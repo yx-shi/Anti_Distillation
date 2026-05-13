@@ -32,4 +32,4 @@
 
 ## Follow-Up
 
-后续不再继续扩展 worker-level smoke 本身，而是把 hard/soft decoding 接入现有 `src/pre_exp/` 框架，跑完整数据、训练、评测 smoke。
+后续不再继续扩展 worker-level smoke 本身，而是把 hard/soft decoding 做成与 response-level `src/pre_exp/` 并列的独立 token-level 链路，跑完整数据、训练、评测 smoke。

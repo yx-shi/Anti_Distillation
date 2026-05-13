@@ -17,13 +17,13 @@
 
 - `plan/roadmap.md`：项目阶段进度和下一阶段方向。
 - `plan/pre_exp_next_run.md`：DeepScaleR 预实验后续正式运行建议。
-- `plan/vllm_dual_adversarial_decoding.md`：vLLM-dual hard/soft 完成首版后的 full smoke 接入路线。
+- `plan/vllm_dual_adversarial_decoding.md`：vLLM-dual hard/soft 完成首版后的独立 token-level smoke 路线。
 
 ## Tasks: Implementation Lists
 
 - `task/README.md`：任务卡模板和 agent 使用规则。
 - `task/pre_exp_deepscaler_main.md`：DeepScaleR 主实验任务卡。
-- `task/vllm_dual_full_smoke_pipeline.md`：vLLM-dual hard/soft 接入现有 pre-exp 框架并跑完整 smoke 的任务卡。
+- `task/vllm_dual_full_smoke_pipeline.md`：vLLM-dual hard/soft 独立 token-level 链路；先做 data-side smoke，再扩展完整 smoke 的任务卡。
 - `task/documentation_maintenance.md`：长任务结束后的文档维护任务卡。
 
 ## Archive

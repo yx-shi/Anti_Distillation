@@ -44,7 +44,7 @@
 ## Active Tasks
 
 - `pre_exp_deepscaler_main.md`：DeepScaleR response-level 主实验。
-- `vllm_dual_full_smoke_pipeline.md`：vLLM-dual hard/soft token-level decoding 接入现有 pre-exp 框架并跑完整 smoke。
+- `vllm_dual_full_smoke_pipeline.md`：vLLM-dual hard/soft token-level decoding 独立链路；先跑 worker smoke + data-side smoke，质量达标后再扩展完整 SFT/eval smoke。
 - `documentation_maintenance.md`：长任务结束后的文档维护。
 
 ## Archive

@@ -31,4 +31,4 @@
 
 ## Follow-Up Task
 
-下一步执行 `docs/task/vllm_dual_full_smoke_pipeline.md`，把 hard/soft decoding 接入现有 pre-exp 框架并跑完整 smoke。
+下一步执行 `docs/task/vllm_dual_full_smoke_pipeline.md`，把 hard/soft decoding 做成与 response-level `src/pre_exp/` 并列的独立 token-level 链路，并跑 data-side / full smoke。

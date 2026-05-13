@@ -33,8 +33,8 @@ vLLM-dual 已在 vLLM 0.8.5 V0 路径中实现 hard/soft token-level adversarial
 当前限制：
 
 - Teacher/Student tokenizer 和 vocab shape 必须对齐；不对齐会在 `DualModelWorker` 中报 tensor shape mismatch。
-- 当前 smoke 用 Qwen3-1.7B 作为 reasoner、Qwen2.5-0.5B-Instruct 作为 controller，已验证工程链路；正式实验仍应改回项目默认 Teacher/Student 组合并重新 smoke。
-- 目前只完成 `vllm_dual/test_dual_worker.py` 级别 smoke，还没有接入 `src/pre_exp/` 的完整 candidate -> dataset -> SFT -> eval 框架。
+- worker-level smoke 默认用 Qwen3-1.7B 作为 reasoner、Qwen2.5-0.5B-Instruct 作为 controller，适合快速验证 DualModelWorker 链路；正式 data-side smoke 使用项目默认 Teacher/Student 组合：Qwen3-8B Teacher + Qwen3-1.7B Student。
+- 目前只完成 `vllm_dual/test_dual_worker.py` 级别 smoke 的历史验证；正式 token-level 链路从独立 data-side smoke 开始，先验证 candidate -> score -> analysis，再进入 SFT 和 eval。
 
 2026-04-27 验证状态：
 
@@ -112,6 +112,8 @@ VLLM_USE_V1=0 conda run -n adistill-unified python -c "import vllm; from vllm.wo
 bash vllm_dual/test.sh
 ```
 
+可用 `ADV_MODE=hard|soft` 切换模式。GPU 资源不足时不要强行运行；先完成代码和文档准备，等资源可用后再复验。
+
 6. 跑普通 vLLM smoke，确认预实验路径仍然不走 dual worker：
 
 ```bash
@@ -141,7 +143,39 @@ conda run -n adistill-unified python src/pre_exp/teacher_generate.py \
 - `--max-new-tokens 16`：只生成 16 个 token，快速验证链路。
 - `--enforce-eager`：关闭 CUDA graph/编译路径，降低 smoke 测试的不确定性。
 
-## 4. 判断是否启用 dual worker
+## 4. token-level data-side 接入口
+
+正式 token-level 入口不把逻辑加到 `vllm_dual/test_dual_worker.py`，也不复用 response-level 的 `src/pre_exp/teacher_generate.py`，而是通过：
+
+```bash
+conda run -n adistill-unified python src/vllm_dual_decoding/teacher_generate.py \
+  --generation-mode plain
+```
+
+`--generation-mode` 支持：
+
+- `plain`：不传 `dual_model_config`，必须走普通 `vllm.worker.worker.Worker`。
+- `hard`：传 `dual_model_config.adversarial_mode=hard`，必须走 `DualModelWorker`。
+- `soft`：传 `dual_model_config.adversarial_mode=soft`，必须走 `DualModelWorker`。
+
+正式 pipeline marker：
+
+```text
+VLLM_DUAL_PIPELINE_EFFECTIVE generation_mode=teacher_plain worker_cls=... adv_mode=None
+VLLM_DUAL_PIPELINE_EFFECTIVE generation_mode=teacher_token_hard worker_cls=... adv_mode=hard
+VLLM_DUAL_PIPELINE_EFFECTIVE generation_mode=teacher_token_soft worker_cls=... adv_mode=soft
+```
+
+hard/soft 仍应同时出现底层 worker marker：
+
+```text
+ADISTILL_DUAL_ADVERSARIAL enabled mode=hard
+ADISTILL_DUAL_ADVERSARIAL enabled mode=soft
+```
+
+当前 data-side smoke 串联脚本为 `scripts/run_vllm_dual_data_smoke.sh`，只运行生成、Student NLL 打分和数据质量分析，不运行 SFT 训练。
+
+## 5. 判断是否启用 dual worker
 
 普通路径日志应看到：
 
@@ -157,7 +191,7 @@ parallel_config.worker_cls: vllm.worker.dual_worker.DualModelWorker
 
 只有传入 `dual_model_config` 时，才会切到 `DualModelWorker`。
 
-## 5. 回退
+## 6. 回退
 
 如果同步后环境坏了，可以从最近一次备份回退：
 

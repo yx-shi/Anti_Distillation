@@ -56,7 +56,7 @@ DeepScaleR 字段：
 
 ## Token-Level Decoding Outputs
 
-vLLM-dual hard/soft 接入 full smoke 时，优先复用现有 pre-exp 产物规范，但需要额外记录生成模式维度。
+vLLM-dual hard/soft 使用独立 token-level 链路，目录为 `src/vllm_dual_decoding/`。它不接入 response-level 的 `src/pre_exp/` 主入口，但产物字段应尽量兼容现有评分、SFT-ready 数据和 eval 消费约定。当前先做 data-side smoke：生成、Student NLL 打分和数据质量分析；checkpoint、训练曲线和最终 eval 放到后续 full smoke。
 
 建议模式名：
 
@@ -64,7 +64,9 @@ vLLM-dual hard/soft 接入 full smoke 时，优先复用现有 pre-exp 产物规
 - `teacher_token_hard`：`dual_model_config.adversarial_mode=hard`。
 - `teacher_token_soft`：`dual_model_config.adversarial_mode=soft`。
 
-token-level full smoke 的 raw generation/candidate 记录应尽量包含：
+这三个名字暂时表示三种独立生成模式，不是 response-level 的 `teacher_baseline` / `teacher_adversarial` selection mode。
+
+token-level data-side smoke 的 raw generation/candidate 记录应尽量包含：
 
 - `generation_mode`：上述模式名。
 - `dual_model_config`：hard/soft 的关键参数摘要；plain 可为 `null`。
@@ -74,6 +76,26 @@ token-level full smoke 的 raw generation/candidate 记录应尽量包含：
 - `intervention_summary`：如果当前 pipeline 能稳定获得 hard/soft intervention 统计则写入；否则在 run summary 中记录“仅日志可见”。
 
 SFT-ready JSONL 仍应兼容 `src/train_sft.py --dataset-format distill_jsonl`，避免为 token-level smoke 另起训练数据格式。
+
+当前 data-side smoke 输出布局：
+
+```text
+result/vllm_dual_decoding/candidates/vllm_dual_data_smoke_gsm8k24/
+  teacher_plain/
+    candidate_pool.jsonl
+    scored_candidates.jsonl
+  teacher_token_hard/
+    candidate_pool.jsonl
+    scored_candidates.jsonl
+  teacher_token_soft/
+    candidate_pool.jsonl
+    scored_candidates.jsonl
+result/vllm_dual_decoding/analysis/vllm_dual_data_smoke_gsm8k24/
+  data_quality_summary.json
+  logs/
+```
+
+data-side 阶段不要求产出 distill JSONL、checkpoint 或 eval JSON；这些属于后续 full smoke。
 
 ## Main Outputs
 
