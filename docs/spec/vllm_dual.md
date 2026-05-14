@@ -54,6 +54,7 @@ vLLM-dual 已在 vLLM 0.8.5 V0 路径中实现 hard/soft token-level adversarial
 - soft worker smoke 通过，日志包含 `SMOKE_DUAL_EFFECTIVE ... adv_mode=soft` 和 `ADISTILL_DUAL_ADVERSARIAL enabled mode=soft`。
 - DeepScaleR 1 条、16 token micro data chain 通过：plain 走 `vllm.worker.worker.Worker`，hard/soft 走 `vllm.worker.dual_worker.DualModelWorker`，三种模式都产出 `candidate_pool.jsonl`、`scored_candidates.jsonl` 和 `data_quality_summary.json`。
 - `scripts/run_vllm_dual_data_smoke.sh` 已准备为 DeepScaleR 10000 条正式 data build：`MAX_SAMPLES=10000`，`GENERATION_GPU_IDS=0..7`，`GENERATION_NUM_SHARDS=8`，`TEACHER_TP_SIZE=1`，三种模式顺序运行，每种模式内 8 卡 replica 并发，默认输出根目录为 `/home/disk2/shiyixuan/Anti_Distillation/result/vllm_dual_decoding`。
+- 2026-05-14 已新增 token-level full pipeline 入口：`src/vllm_dual_decoding/build_distill_dataset.py` 将每个 generation mode 的 `scored_candidates.jsonl` 转成 SFT-ready `distill_*.jsonl`；`src/vllm_dual_decoding/run_full_pipeline.py` 可串联 `build_distill`、`build_holdout`、`train`、`checkpoint_eval`、`final_eval`。DeepScaleR 8000 条三组数据已完成 distill JSONL 与 1024 条 holdout eval JSONL 构建；尚未启动长训练或 GPU rollout eval。
 
 ## 1. 目录职责
 
@@ -80,6 +81,8 @@ import vllm
 会导入 conda 环境里的 `site-packages/vllm`，而不是 `vllm_dual/vllm`。
 
 `vllm_dual/test_dual_worker.py` 比较特殊：测试文件就在 `vllm_dual/` 目录下。如果直接运行它，Python 默认会把 `vllm_dual/` 放到搜索路径最前面。测试脚本里已经显式移除了这个路径，确保测试的是同步后的 conda 版 vLLM。
+
+token-level full pipeline 训练/eval 阶段沿用 conda 环境中的 vLLM 和 `src/train_sft.py` / `src/pre_exp/final_eval.py`，不需要把 `vllm_dual/` 加入 `PYTHONPATH`。
 
 ## 3. 常规开发循环
 
