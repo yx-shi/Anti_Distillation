@@ -48,7 +48,8 @@
 - main8000 训练使用 `TRAIN_MAX_LENGTH=5120`、8 卡 FSDP、1000 step；rollout eval 使用 DeepScaleR holdout，排除 seed-42 main8000 训练子集。final 4096-sample holdout acc：`teacher_baseline` 37.43%，`teacher_adversarial` 36.47%。结果摘要见 `result/pre_exp/analysis/deepscaler_main8000_k8_t0.9_p0.85_len4096/run_summary.md`。
 - 2026-05-13 已复用 main8000 scored candidates 跑通 correctness-matched 数据侧，不启动训练。新产物目录：`result/pre_exp/datasets/deepscaler_main8000_k8_t0.9_p0.85_len4096_correctness_matched` 和 `result/pre_exp/analysis/deepscaler_main8000_k8_t0.9_p0.85_len4096_correctness_matched`。selected correctness 已对齐：baseline/adversarial 均为 54.85%，逐样本 correctness mismatch 为 0，平均 Student NLL gap 为 +0.06155。
 - 2026-05-13 correctness-matched 两组 SFT 训练、checkpoint eval、final eval 和曲线绘制已完成。训练输出目录：`/home/disk2/shiyixuan/pre_exp_runs/deepscaler_main8000_k8_t0.9_p0.85_len4096_correctness_matched`。结果摘要见 `result/pre_exp/analysis/deepscaler_main8000_k8_t0.9_p0.85_len4096_correctness_matched/run_summary.md`。训练内 val_loss/ppl：baseline 0.2591 / 1.2958，adversarial 0.2495 / 1.2834。final 4096-sample holdout acc：baseline 35.99%，adversarial 37.55%，adversarial 高 1.56 个百分点。
-- vLLM-dual 当前只完成 worker-level hard/soft smoke，尚未完成 candidate -> dataset -> SFT -> eval 的 full smoke。
+- 2026-05-13 token-level vLLM-dual preflight 已完成：`sync.sh` dry run 后正式同步到 conda 环境，备份目录 `.sync_backups/vllm_20260513_165733`；`config.py`、`engine/arg_utils.py`、`worker/dual_worker.py` 与 conda site-packages 逐字节一致；hard/soft worker smoke 均出现 `DualModelWorker` 和 `ADISTILL_DUAL_ADVERSARIAL enabled` marker。
+- 2026-05-13 `scripts/run_vllm_dual_data_smoke.sh` 已从小样本 smoke 扩展为 DeepScaleR 10000 条 token-level data build 入口：三种模式顺序运行，每种模式内部按 8 个 TP=1 shard 并发生成和打分，默认产物写到 `/home/disk2/shiyixuan/Anti_Distillation/result/vllm_dual_decoding`。已用 DeepScaleR 1 条、16 token micro chain 验证 `teacher_plain`、`teacher_token_hard`、`teacher_token_soft` 均能生成、Student NLL 打分并汇总；正式 10000 条 data-side run 尚未运行，full smoke 的 SFT/eval 阶段也尚未开始。
 
 ## Maintenance Rule
 

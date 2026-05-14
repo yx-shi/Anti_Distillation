@@ -34,7 +34,7 @@ vLLM-dual 已在 vLLM 0.8.5 V0 路径中实现 hard/soft token-level adversarial
 
 - Teacher/Student tokenizer 和 vocab shape 必须对齐；不对齐会在 `DualModelWorker` 中报 tensor shape mismatch。
 - worker-level smoke 默认用 Qwen3-1.7B 作为 reasoner、Qwen2.5-0.5B-Instruct 作为 controller，适合快速验证 DualModelWorker 链路；正式 data-side smoke 使用项目默认 Teacher/Student 组合：Qwen3-8B Teacher + Qwen3-1.7B Student。
-- 目前只完成 `vllm_dual/test_dual_worker.py` 级别 smoke 的历史验证；正式 token-level 链路从独立 data-side smoke 开始，先验证 candidate -> score -> analysis，再进入 SFT 和 eval。
+- `scripts/run_vllm_dual_data_smoke.sh` 是当前 token-level data-side 入口，默认 DeepScaleR 10000 条，只运行 candidate -> score -> analysis，不进入 SFT 和 eval。正式默认采用三种模式顺序运行、每种模式内部 8 个 TP=1 shard 并发的口径。
 
 2026-04-27 验证状态：
 
@@ -44,6 +44,16 @@ vLLM-dual 已在 vLLM 0.8.5 V0 路径中实现 hard/soft token-level adversarial
 - hard smoke 通过，日志包含 `SMOKE_DUAL_EFFECTIVE ... adv_mode=hard` 和 `ADISTILL_DUAL_ADVERSARIAL enabled mode=hard`。
 - soft smoke 通过，日志包含 `SMOKE_DUAL_EFFECTIVE ... adv_mode=soft` 和 `ADISTILL_DUAL_ADVERSARIAL enabled mode=soft`。
 - 普通 vLLM smoke 通过，日志显示 `parallel_config.worker_cls: vllm.worker.worker.Worker`。
+
+2026-05-13 复验与 data-side 准备状态：
+
+- `ASSUME_YES=1 DRY_RUN=1 bash sync.sh` 后执行 `ASSUME_YES=1 bash sync.sh`，备份目录为 `.sync_backups/vllm_20260513_165733`。
+- `config.py`、`engine/arg_utils.py`、`worker/dual_worker.py` 已确认与 conda 环境中的 site-packages 逐字节一致。
+- conda import 检查通过：`vllm==0.8.5`，可导入 `vllm.worker.dual_worker.DualModelWorker` 和 `vllm.config.DualModelConfig`。
+- hard worker smoke 通过，日志包含 `SMOKE_DUAL_EFFECTIVE ... adv_mode=hard` 和 `ADISTILL_DUAL_ADVERSARIAL enabled mode=hard`。
+- soft worker smoke 通过，日志包含 `SMOKE_DUAL_EFFECTIVE ... adv_mode=soft` 和 `ADISTILL_DUAL_ADVERSARIAL enabled mode=soft`。
+- DeepScaleR 1 条、16 token micro data chain 通过：plain 走 `vllm.worker.worker.Worker`，hard/soft 走 `vllm.worker.dual_worker.DualModelWorker`，三种模式都产出 `candidate_pool.jsonl`、`scored_candidates.jsonl` 和 `data_quality_summary.json`。
+- `scripts/run_vllm_dual_data_smoke.sh` 已准备为 DeepScaleR 10000 条正式 data build：`MAX_SAMPLES=10000`，`GENERATION_GPU_IDS=0..7`，`GENERATION_NUM_SHARDS=8`，`TEACHER_TP_SIZE=1`，三种模式顺序运行，每种模式内 8 卡 replica 并发，默认输出根目录为 `/home/disk2/shiyixuan/Anti_Distillation/result/vllm_dual_decoding`。
 
 ## 1. 目录职责
 

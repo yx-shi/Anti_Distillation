@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import gc
+import json
 import os
 import sys
 from pathlib import Path
@@ -48,6 +49,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--answer-field", default="answer")
     parser.add_argument("--max-samples", type=int, default=24)
     parser.add_argument("--subset-seed", type=int, default=42)
+    parser.add_argument("--num-shards", type=int, default=1)
+    parser.add_argument("--shard-index", type=int, default=0)
     parser.add_argument("--num-candidates", type=int, default=1)
     parser.add_argument("--temperature", type=float, default=0.7)
     parser.add_argument("--top-p", type=float, default=0.9)
@@ -120,9 +123,21 @@ def shutdown_llm(llm: object) -> None:
 
 def main() -> None:
     args = build_arg_parser().parse_args()
+    if args.num_shards < 1:
+        raise ValueError(f"--num-shards must be >= 1, got {args.num_shards}")
+    if args.shard_index < 0 or args.shard_index >= args.num_shards:
+        raise ValueError(
+            f"--shard-index must be in [0, {args.num_shards}), got {args.shard_index}"
+        )
+
     mode_label = generation_mode_label(args.generation_mode)
     adversarial_mode = None if args.generation_mode == "plain" else args.generation_mode
     dual_model_config = build_dual_model_config(args)
+    record_dual_model_config = (
+        json.loads(json.dumps(dual_model_config, ensure_ascii=False))
+        if dual_model_config is not None
+        else None
+    )
 
     print(
         "vllm_dual_teacher_generate_start "
@@ -131,13 +146,17 @@ def main() -> None:
         f"dataset={args.dataset_name} "
         f"split={args.split} "
         f"generation_mode={mode_label} "
-        f"max_samples={args.max_samples}",
+        f"max_samples={args.max_samples} "
+        f"num_shards={args.num_shards} "
+        f"shard_index={args.shard_index}",
         flush=True,
     )
 
     ensure_writable_hf_datasets_cache()
     dataset = load_dataset(args.dataset_name, args.dataset_config_name, split=args.split)
     subset_indices = choose_subset_indices(len(dataset), args.max_samples, args.subset_seed)
+    total_subset_samples = len(subset_indices)
+    subset_indices = subset_indices[args.shard_index::args.num_shards]
     subset_samples = [dataset[int(dataset_idx)] for dataset_idx in subset_indices]
 
     tokenizer = AutoTokenizer.from_pretrained(
@@ -187,6 +206,8 @@ def main() -> None:
         "generation_mode": mode_label,
         "adversarial_mode": adversarial_mode,
         "num_candidates": args.num_candidates,
+        "num_shards": args.num_shards,
+        "shard_index": args.shard_index,
         "temperature": args.temperature,
         "top_p": args.top_p,
         "max_new_tokens": args.max_new_tokens,
@@ -268,10 +289,12 @@ def main() -> None:
                             "messages": sample_payload["messages"],
                             "prompt_text": sample_payload["prompt_text"],
                             "candidate_id": candidate_idx,
+                            "num_shards": args.num_shards,
+                            "shard_index": args.shard_index,
                             "candidate_text": candidate.text.strip(),
                             "generation_mode": mode_label,
                             "adversarial_mode": adversarial_mode,
-                            "dual_model_config": dual_model_config,
+                            "dual_model_config": record_dual_model_config,
                             "worker_cls": worker_cls,
                             "generation_config": generation_config,
                             "finish_reason": getattr(candidate, "finish_reason", None),
@@ -317,6 +340,9 @@ def main() -> None:
     print(
         "vllm_dual_teacher_generate_done "
         f"prompts={len(prompt_payloads)} "
+        f"total_subset_prompts={total_subset_samples} "
+        f"num_shards={args.num_shards} "
+        f"shard_index={args.shard_index} "
         f"records={completed_records} "
         f"output_file={args.output_file}",
         flush=True,
