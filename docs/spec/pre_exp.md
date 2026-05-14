@@ -425,6 +425,7 @@ result/pre_exp/
 - `train_max_length=5120`
 - checkpoint eval 固定 DeepScaleR holdout 子集 `max_samples=1024`
 - final eval 固定 DeepScaleR holdout 子集 `max_samples=4096`
+- 离线 rollout eval 每题采样 4 次，默认 `temperature=0.7`、`top_p=0.8`
 
 这里最重要的原则是：
 
@@ -446,6 +447,10 @@ SFT trainer 主循环只记录 loss / ppl，并保存周期性 checkpoint；roll
 checkpoint eval 至少记录：
 
 - `rollout_acc`
+- `rollout_acc_variance`
+- `rollout_acc_std`
+
+多 rollout 评测先在每道题内部计算 4 次 correctness 的 mean 和 population variance，再用独立随机变量的均值/方差可加性聚合整体 accuracy：`rollout_acc = mean(sample_mean)`，`rollout_acc_variance = sum(sample_variance) / N^2`。rollout accuracy 曲线中的点使用 mean，误差线使用 mean ± std。
 
 ### 11.3 训练后评测
 

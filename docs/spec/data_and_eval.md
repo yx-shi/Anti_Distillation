@@ -25,6 +25,21 @@ DeepScaleR 字段：
 - 再由 `grading.grader.grade_answer` 与 gold answer 比较。
 - 对数学数据，prompt 统一要求模型把最终答案放入 `\boxed{}`。不再使用 GSM8K `#### ...`、泛自然语言或普通公式兜底抽取。
 
+## Rollout Eval Metrics
+
+当前离线 rollout eval 对每道题采样 4 次，默认使用 `temperature=0.7`、`top_p=0.8`。每题先把 4 个 correctness 结果计算成：
+
+- `sample_rollout_acc_mean`
+- `sample_rollout_acc_variance`，使用 population variance
+
+整体指标按独立随机变量的均值/方差可加性聚合：
+
+- `rollout_acc = mean(sample_rollout_acc_mean)`
+- `rollout_acc_variance = sum(sample_rollout_acc_variance) / N^2`
+- `rollout_acc_std = sqrt(rollout_acc_variance)`
+
+曲线图中的点使用 `rollout_acc`，误差线使用 `rollout_acc ± rollout_acc_std`。
+
 ## Candidate Quality Fields
 
 预实验候选常用字段：

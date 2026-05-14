@@ -137,36 +137,99 @@ def grade_rollout_predictions(
 ) -> tuple[dict[str, float], list[dict[str, Any]]]:
     """用统一的 grading 规则评估一批 rollout 输出。"""
 
-    if len(samples) != len(generated_texts):
+    return grade_multi_rollout_predictions(samples, [[text] for text in generated_texts])
+
+
+def population_variance(values: list[float], mean_value: float) -> float:
+    if not values:
+        return 0.0
+    return sum((value - mean_value) ** 2 for value in values) / len(values)
+
+
+def grade_multi_rollout_predictions(
+    samples: list[dict[str, Any]],
+    generated_texts_by_sample: list[list[str]],
+) -> tuple[dict[str, float], list[dict[str, Any]]]:
+    """评估每题多次 rollout，并按独立样本方差传播得到整体 acc 方差。
+
+    对第 i 道题，先用 R 次 rollout 的 0/1 correctness 估计该题随机变量的
+    mean/variance；整体 accuracy 是 N 道题随机变量的平均，因此整体方差为
+    sum(var_i) / N^2。
+    """
+
+    if len(samples) != len(generated_texts_by_sample):
         raise ValueError(
             "The number of prepared samples does not match the number of generated outputs."
         )
 
     extract_final_ans, grade_answer = load_grading_functions()
     eval_records: list[dict[str, Any]] = []
-    correct = 0
+    sample_means: list[float] = []
+    sample_variances: list[float] = []
+    expected_correct = 0.0
+    num_rollouts = 0
 
-    for sample, generated_text in zip(samples, generated_texts):
-        completion = generated_text.strip()
-        predicted_answer = extract_final_ans(completion)
-        is_correct = predicted_answer is not None and grade_answer(predicted_answer, sample["gold_answer"])
-        correct += int(is_correct)
+    for sample, generated_texts in zip(samples, generated_texts_by_sample):
+        if not generated_texts:
+            raise ValueError("Each sample must have at least one rollout output.")
+        if num_rollouts == 0:
+            num_rollouts = len(generated_texts)
+        elif len(generated_texts) != num_rollouts:
+            raise ValueError("All samples must have the same number of rollout outputs.")
+
+        rollout_records: list[dict[str, Any]] = []
+        correctness_values: list[float] = []
+        for rollout_id, generated_text in enumerate(generated_texts):
+            completion = generated_text.strip()
+            predicted_answer = extract_final_ans(completion)
+            is_correct = predicted_answer is not None and grade_answer(
+                predicted_answer,
+                sample["gold_answer"],
+            )
+            correctness_values.append(float(is_correct))
+            rollout_records.append(
+                {
+                    "rollout_id": rollout_id,
+                    "generated_text": generated_text,
+                    "predicted_answer": predicted_answer,
+                    "is_correct": bool(is_correct),
+                }
+            )
+
+        sample_mean = sum(correctness_values) / len(correctness_values)
+        sample_variance = population_variance(correctness_values, sample_mean)
+        sample_means.append(sample_mean)
+        sample_variances.append(sample_variance)
+        expected_correct += sample_mean
+
+        first_rollout = rollout_records[0]
         eval_records.append(
             {
                 "sample_id": sample["sample_id"],
                 "question": sample["question"],
                 "gold_answer": sample["gold_answer"],
-                "generated_text": generated_text,
-                "predicted_answer": predicted_answer,
-                "is_correct": bool(is_correct),
+                "generated_text": first_rollout["generated_text"],
+                "predicted_answer": first_rollout["predicted_answer"],
+                "is_correct": first_rollout["is_correct"],
+                "sample_rollout_acc_mean": sample_mean,
+                "sample_rollout_acc_variance": sample_variance,
+                "rollouts": rollout_records,
             }
         )
 
     total = len(samples)
+    rollout_acc = sum(sample_means) / total if total > 0 else 0.0
+    rollout_variance = sum(sample_variances) / (total * total) if total > 0 else 0.0
     metrics = {
-        "rollout_acc": correct / total if total > 0 else 0.0,
-        "rollout_correct": float(correct),
+        "rollout_acc": rollout_acc,
+        "rollout_acc_variance": rollout_variance,
+        "rollout_acc_std": math.sqrt(rollout_variance),
+        "mean_sample_rollout_acc_variance": (
+            sum(sample_variances) / total if total > 0 else 0.0
+        ),
+        "rollout_correct": float(expected_correct),
         "rollout_total": float(total),
+        "num_rollouts": float(num_rollouts),
     }
     return metrics, eval_records
 

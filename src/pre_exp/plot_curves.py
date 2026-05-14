@@ -219,6 +219,8 @@ def load_rollout_metrics(
             {
                 "step": step,
                 "rollout_acc": rollout_acc,
+                "rollout_acc_variance": as_float(payload["metrics"].get("rollout_acc_variance")),
+                "rollout_acc_std": as_float(payload["metrics"].get("rollout_acc_std")),
                 "rollout_correct": as_float(payload["metrics"].get("rollout_correct")),
                 "rollout_total": as_float(payload["metrics"].get("rollout_total")),
                 "source": str(json_path),
@@ -337,6 +339,10 @@ def render_svg(
 
     x_values = [point[0] for point in all_points]
     y_values = [point[1] for point in all_points]
+    for point in all_points:
+        error = point[2] if len(point) >= 3 else None
+        if error is not None:
+            y_values.extend([point[1] - error, point[1] + error])
     x_min, x_max = min(x_values), max(x_values)
     y_min, y_max = min(y_values), max(y_values)
     if x_min == x_max:
@@ -364,10 +370,29 @@ def render_svg(
 
     for idx, item in enumerate(series):
         color = color_for_mode(item["mode"], idx)
-        points_attr = " ".join(f"{sx(x):.2f},{sy(y):.2f}" for x, y in item["points"])
+        points_attr = " ".join(f"{sx(point[0]):.2f},{sy(point[1]):.2f}" for point in item["points"])
         if len(item["points"]) >= 2:
             lines.append(f'<polyline points="{points_attr}" fill="none" stroke="{color}" stroke-width="2.4"/>')
-        for x, y in item["points"]:
+        for point in item["points"]:
+            x = point[0]
+            y = point[1]
+            error = point[2] if len(point) >= 3 else None
+            if error is not None and error > 0:
+                y_low = sy(y - error)
+                y_high = sy(y + error)
+                x_pos = sx(x)
+                lines.append(
+                    f'<line x1="{x_pos:.2f}" y1="{y_high:.2f}" x2="{x_pos:.2f}" y2="{y_low:.2f}" '
+                    f'stroke="{color}" stroke-width="1.4" class="errorbar"/>'
+                )
+                lines.append(
+                    f'<line x1="{x_pos - 4:.2f}" y1="{y_high:.2f}" x2="{x_pos + 4:.2f}" y2="{y_high:.2f}" '
+                    f'stroke="{color}" stroke-width="1.4" class="errorcap"/>'
+                )
+                lines.append(
+                    f'<line x1="{x_pos - 4:.2f}" y1="{y_low:.2f}" x2="{x_pos + 4:.2f}" y2="{y_low:.2f}" '
+                    f'stroke="{color}" stroke-width="1.4" class="errorcap"/>'
+                )
             lines.append(f'<circle cx="{sx(x):.2f}" cy="{sy(y):.2f}" r="3.2" fill="{color}"/>')
         lines.append(f'<line x1="{legend_x}" y1="{legend_y + idx * 22}" x2="{legend_x + 24}" y2="{legend_y + idx * 22}" stroke="{color}" stroke-width="2.4"/>')
         lines.append(f'<text x="{legend_x + 32}" y="{legend_y + idx * 22 + 4}" class="legend">{escape(item["mode"])}</text>')
@@ -520,6 +545,7 @@ def build_series(
     mode_data: dict[str, Any],
     collection_name: str,
     value_name: str,
+    error_name: str | None = None,
 ) -> list[dict[str, Any]]:
     series: list[dict[str, Any]] = []
     for mode in modes:
@@ -528,7 +554,11 @@ def build_series(
             value = as_float(point.get(value_name))
             step = as_float(point.get("step"))
             if step is not None and value is not None:
-                points.append((step, value))
+                error = as_float(point.get(error_name)) if error_name else None
+                if error is not None:
+                    points.append((step, value, error))
+                else:
+                    points.append((step, value))
         series.append({"mode": mode, "points": points})
     return series
 
@@ -556,7 +586,13 @@ def write_outputs(curve_data: dict[str, Any], output_dir: Path) -> list[Path]:
         rollout_svg,
         render_svg(
             "Rollout Accuracy",
-            build_series(modes, mode_data, "rollout_accuracy", "rollout_acc"),
+            build_series(
+                modes,
+                mode_data,
+                "rollout_accuracy",
+                "rollout_acc",
+                error_name="rollout_acc_std",
+            ),
             "rollout_acc",
         ),
     )

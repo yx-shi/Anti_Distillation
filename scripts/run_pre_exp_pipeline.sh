@@ -38,15 +38,15 @@ export PYTHONUNBUFFERED=1
 TEACHER_MODEL="/home/disk1/public_checkpoint/Qwen3-8B"
 STUDENT_MODEL="/home/disk1/public_checkpoint/Qwen3-1.7B"
 
-EXPERIMENT_NAME="deepscaler_main8000_k8_t0.9_p0.85_len4096"
-RESULT_ROOT="result/pre_exp"
+EXPERIMENT_NAME="${EXPERIMENT_NAME:-deepscaler_main8000_k8_t0.9_p0.85_len4096}"
+RESULT_ROOT="${RESULT_ROOT:-result/pre_exp}"
 CANDIDATE_DIR="${RESULT_ROOT}/candidates/${EXPERIMENT_NAME}"
 DATASET_DIR="${RESULT_ROOT}/datasets/${EXPERIMENT_NAME}"
 SELECTION_DIR="${DATASET_DIR}/selections"
 # 训练 checkpoint 较大，放到 /home/disk2，避免写满仓库所在磁盘。
-RUN_DIR="/home/disk2/shiyixuan/pre_exp_runs/${EXPERIMENT_NAME}"
-ANALYSIS_DIR="${RESULT_ROOT}/analysis/${EXPERIMENT_NAME}"
-LOG_DIR="${ANALYSIS_DIR}/logs"
+RUN_DIR="${RUN_DIR:-/home/disk2/shiyixuan/pre_exp_runs/${EXPERIMENT_NAME}}"
+ANALYSIS_DIR="${ANALYSIS_DIR:-${RESULT_ROOT}/analysis/${EXPERIMENT_NAME}}"
+LOG_DIR="${LOG_DIR:-${ANALYSIS_DIR}/logs}"
 
 mkdir -p "${CANDIDATE_DIR}" "${DATASET_DIR}" "${SELECTION_DIR}" "${ANALYSIS_DIR}" "${LOG_DIR}"
 
@@ -153,10 +153,14 @@ EVAL_TP_SIZE="${EVAL_TP_SIZE:-1}"
 EVAL_MAX_MODEL_LEN="${EVAL_MAX_MODEL_LEN:-8192}"
 EVAL_MAX_NUM_SEQS="${EVAL_MAX_NUM_SEQS:-32}"
 EVAL_GPU_MEMORY_UTILIZATION="${EVAL_GPU_MEMORY_UTILIZATION:-0.85}"
+EVAL_NUM_ROLLOUTS="${EVAL_NUM_ROLLOUTS:-4}"
+EVAL_TEMPERATURE="${EVAL_TEMPERATURE:-0.7}"
+EVAL_TOP_P="${EVAL_TOP_P:-0.8}"
+EVAL_SAMPLING_SEED="${EVAL_SAMPLING_SEED:-42}"
 
 CHECKPOINT_EVAL_MAX_SAMPLES="${CHECKPOINT_EVAL_MAX_SAMPLES:-1024}"
 
-FINAL_EVAL_MAX_SAMPLES="${FINAL_EVAL_MAX_SAMPLES:-4096}"
+FINAL_EVAL_MAX_SAMPLES="${FINAL_EVAL_MAX_SAMPLES:-2048}"
 
 # DeepScaleR 只有 train split；holdout 定义为排除 main8000 训练子集后的剩余样本。
 EVAL_DATASET_NAME="${EVAL_DATASET_NAME:-${DATASET_NAME}}"
@@ -184,6 +188,10 @@ EVAL_COMMON_ARGS=(
   --exclude-subset-seed "${EVAL_EXCLUDE_SEED}"
   --subset-seed "${SUBSET_SEED}"
   --max-new-tokens "${ROLLOUT_MAX_NEW_TOKENS}"
+  --num-rollouts "${EVAL_NUM_ROLLOUTS}"
+  --temperature "${EVAL_TEMPERATURE}"
+  --top-p "${EVAL_TOP_P}"
+  --sampling-seed "${EVAL_SAMPLING_SEED}"
   --tensor-parallel-size "${EVAL_TP_SIZE}"
   --max-model-len "${EVAL_MAX_MODEL_LEN}"
   --max-num-seqs "${EVAL_MAX_NUM_SEQS}"
@@ -200,9 +208,9 @@ EVAL_COMMON_ARGS=(
 RUN_TEACHER_GENERATE="${RUN_TEACHER_GENERATE:-0}"
 RUN_STUDENT_SCORE="${RUN_STUDENT_SCORE:-0}"
 RUN_SELECT_AND_BUILD="${RUN_SELECT_AND_BUILD:-0}"
-RUN_ANALYZE_DATASET="${RUN_ANALYZE_DATASET:-1}"
+RUN_ANALYZE_DATASET="${RUN_ANALYZE_DATASET:-0}"
 RUN_BUILD_HOLDOUT_EVAL="${RUN_BUILD_HOLDOUT_EVAL:-1}"
-RUN_TRAIN="${RUN_TRAIN:-1}"
+RUN_TRAIN="${RUN_TRAIN:-0}"
 
 RUN_CHECKPOINT_EVAL="${RUN_CHECKPOINT_EVAL:-1}"
 RUN_FINAL_EVAL="${RUN_FINAL_EVAL:-1}"
@@ -215,8 +223,8 @@ RUN_PLOT_CURVES="${RUN_PLOT_CURVES:-1}"
 
 CANDIDATE_POOL_FILE="${CANDIDATE_DIR}/candidate_pool.jsonl"
 SCORED_CANDIDATES_FILE="${CANDIDATE_DIR}/scored_candidates.jsonl"
-DATASET_SUMMARY_FILE="${ANALYSIS_DIR}/dataset_summary_expanded.json"
-CURVE_DIR="${ANALYSIS_DIR}/curves"
+DATASET_SUMMARY_FILE="${DATASET_SUMMARY_FILE:-${ANALYSIS_DIR}/dataset_summary_expanded.json}"
+CURVE_DIR="${CURVE_DIR:-${ANALYSIS_DIR}/curves}"
 
 MODES=(
   "teacher_baseline"
@@ -424,6 +432,13 @@ checkpoint_eval_one_mode() {
     checkpoint_dirs+=("${RUN_DIR}/${mode}/final_checkpoint")
   fi
   local checkpoint_outputs=()
+  local base_output="${ANALYSIS_DIR}/${output_prefix}_000000.json"
+  local base_log="${LOG_DIR}/${output_prefix}_000000.log"
+  guard_output_file "${base_output}"
+  guard_output_file "${base_output%.json}.records.jsonl"
+  guard_output_file "${base_log}"
+  checkpoint_outputs+=("${base_output}")
+
   local checkpoint_dir
   for checkpoint_dir in "${checkpoint_dirs[@]}"; do
     local checkpoint_label
@@ -448,6 +463,20 @@ checkpoint_eval_one_mode() {
   local pids=()
   local launched_in_batch=0
   local checkpoint_idx=0
+
+  local base_gpu_id="${EVAL_GPU_ID_LIST[0]}"
+  echo
+  echo "[$(date '+%F %T')] launching checkpoint eval mode=${mode} checkpoint=000000 gpu=${base_gpu_id}"
+  run_cmd env CUDA_VISIBLE_DEVICES="${base_gpu_id}" \
+    ${CONDA_RUN} python src/pre_exp/final_eval.py \
+      "${EVAL_COMMON_ARGS[@]}" \
+      --model-name-or-path "${STUDENT_MODEL}" \
+      --max-samples "${CHECKPOINT_EVAL_MAX_SAMPLES}" \
+      --checkpoint-label-override "000000" \
+      --checkpoint-step-override 0 \
+      --output-file "${base_output}" \
+      > "${base_log}" 2>&1
+
   for checkpoint_dir in "${checkpoint_dirs[@]}"; do
     local checkpoint_label
     local checkpoint_output

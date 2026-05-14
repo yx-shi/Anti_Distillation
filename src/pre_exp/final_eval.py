@@ -21,7 +21,7 @@ if str(SRC_ROOT) not in sys.path:
 
 from pre_exp.common import choose_holdout_indices, write_json, write_jsonl
 from sft.hf_cache import ensure_writable_hf_datasets_cache
-from sft.rollout_eval import build_rollout_eval_samples, grade_rollout_predictions
+from sft.rollout_eval import build_rollout_eval_samples, grade_multi_rollout_predictions
 
 
 DEFAULT_MODEL_PATH = "result/pre_exp/runs/smoke/teacher_baseline/final_checkpoint"
@@ -40,6 +40,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--question-field", default="question")
     parser.add_argument("--answer-field", default="answer")
     parser.add_argument("--max-new-tokens", type=int, default=512)
+    parser.add_argument("--num-rollouts", type=int, default=4)
+    parser.add_argument("--temperature", type=float, default=0.7)
+    parser.add_argument("--top-p", type=float, default=0.8)
+    parser.add_argument("--sampling-seed", type=int, default=42)
     parser.add_argument("--max-samples", type=int, default=0)
     parser.add_argument("--subset-seed", type=int, default=42)
     parser.add_argument(
@@ -77,6 +81,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--trust-remote-code", action="store_true")
     parser.add_argument("--use-tqdm", action="store_true")
     parser.add_argument("--allow-remote-model-files", action="store_true")
+    parser.add_argument("--checkpoint-label-override", default="")
+    parser.add_argument("--checkpoint-step-override", type=int, default=None)
     return parser
 
 
@@ -101,6 +107,16 @@ def checkpoint_step(checkpoint_path: Path) -> int | None:
         return int(name.removeprefix("checkpoint-step-"))
     except ValueError:
         return None
+
+
+def resolved_checkpoint_label(checkpoint_path: Path, args: argparse.Namespace) -> str:
+    return args.checkpoint_label_override or checkpoint_label(checkpoint_path)
+
+
+def resolved_checkpoint_step(checkpoint_path: Path, args: argparse.Namespace) -> int | None:
+    if args.checkpoint_step_override is not None:
+        return args.checkpoint_step_override
+    return checkpoint_step(checkpoint_path)
 
 
 def safe_stem_component(value: str) -> str:
@@ -196,7 +212,8 @@ def run_hf_rollout_eval(
     )
     prompts = [sample["prompt_text"] for sample in samples]
 
-    generated_texts: list[str] = []
+    torch.manual_seed(args.sampling_seed)
+    generated_texts_by_sample: list[list[str]] = []
     with torch.inference_mode():
         for prompt_text in prompts:
             batch = tokenizer(
@@ -209,15 +226,21 @@ def run_hf_rollout_eval(
                 input_ids=batch["input_ids"],
                 attention_mask=batch["attention_mask"],
                 max_new_tokens=args.max_new_tokens,
-                do_sample=False,
+                do_sample=args.temperature > 0.0,
+                temperature=args.temperature,
+                top_p=args.top_p,
+                num_return_sequences=args.num_rollouts,
                 use_cache=True,
                 pad_token_id=tokenizer.pad_token_id,
                 eos_token_id=tokenizer.eos_token_id,
             )
-            generated_ids = output_ids[0, batch["input_ids"].size(1):]
-            generated_texts.append(tokenizer.decode(generated_ids, skip_special_tokens=True).strip())
+            sample_texts: list[str] = []
+            for sequence_ids in output_ids:
+                generated_ids = sequence_ids[batch["input_ids"].size(1):]
+                sample_texts.append(tokenizer.decode(generated_ids, skip_special_tokens=True).strip())
+            generated_texts_by_sample.append(sample_texts)
 
-    metrics, eval_records = grade_rollout_predictions(samples, generated_texts)
+    metrics, eval_records = grade_multi_rollout_predictions(samples, generated_texts_by_sample)
     return metrics, eval_records
 
 
@@ -251,8 +274,10 @@ def run_vllm_rollout_eval(
         raise SystemExit("未检测到 vllm。请确认当前环境已安装 vllm==0.8.5。") from exc
 
     sampling_params = SamplingParams(
-        temperature=0.0,
-        top_p=1.0,
+        n=args.num_rollouts,
+        temperature=args.temperature,
+        top_p=args.top_p,
+        seed=args.sampling_seed,
         max_tokens=args.max_new_tokens,
     )
 
@@ -270,12 +295,15 @@ def run_vllm_rollout_eval(
             generation_config="vllm",
         )
         outputs = llm.generate(prompts, sampling_params, use_tqdm=args.use_tqdm)
-        generated_texts = [output.outputs[0].text.strip() for output in outputs]
+        generated_texts_by_sample = [
+            [completion.text.strip() for completion in output.outputs]
+            for output in outputs
+        ]
     finally:
         if llm is not None:
             shutdown_llm(llm)
 
-    metrics, eval_records = grade_rollout_predictions(samples, generated_texts)
+    metrics, eval_records = grade_multi_rollout_predictions(samples, generated_texts_by_sample)
     return metrics, eval_records
 
 
@@ -302,14 +330,18 @@ def evaluate_checkpoint(
     payload = {
         "engine": args.engine,
         "model_name_or_path": str(checkpoint_path),
-        "checkpoint_label": checkpoint_label(checkpoint_path),
-        "checkpoint_step": checkpoint_step(checkpoint_path),
+        "checkpoint_label": resolved_checkpoint_label(checkpoint_path, args),
+        "checkpoint_step": resolved_checkpoint_step(checkpoint_path, args),
         "dataset_name": args.dataset_name,
         "dataset_config_name": args.dataset_config_name,
         "split": args.split,
         "question_field": args.question_field,
         "answer_field": args.answer_field,
         "max_new_tokens": args.max_new_tokens,
+        "num_rollouts": args.num_rollouts,
+        "temperature": args.temperature,
+        "top_p": args.top_p,
+        "sampling_seed": args.sampling_seed,
         "max_samples": args.max_samples,
         "subset_seed": args.subset_seed,
         "exclude_subset_max_samples": args.exclude_subset_max_samples,
@@ -326,6 +358,8 @@ def evaluate_checkpoint(
 
 def main() -> None:
     args = build_arg_parser().parse_args()
+    if args.num_rollouts <= 0:
+        raise SystemExit("--num-rollouts must be positive.")
     device = resolve_device(args.device)
     dataset = load_eval_dataset(args)
     checkpoint_paths = resolve_checkpoint_paths(args)
@@ -373,6 +407,7 @@ def main() -> None:
             f"engine={args.engine} "
             f"checkpoint={checkpoint_path} "
             f"rollout_acc={checkpoint_payload['metrics']['rollout_acc']:.4f} "
+            f"rollout_acc_std={checkpoint_payload['metrics'].get('rollout_acc_std', 0.0):.4f} "
             f"output_file={checkpoint_output_file}",
             flush=True,
         )
@@ -388,6 +423,10 @@ def main() -> None:
                 "question_field": args.question_field,
                 "answer_field": args.answer_field,
                 "max_new_tokens": args.max_new_tokens,
+                "num_rollouts": args.num_rollouts,
+                "temperature": args.temperature,
+                "top_p": args.top_p,
+                "sampling_seed": args.sampling_seed,
                 "max_samples": args.max_samples,
                 "subset_seed": args.subset_seed,
                 "exclude_subset_max_samples": args.exclude_subset_max_samples,
