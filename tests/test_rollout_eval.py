@@ -11,6 +11,56 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from src.sft import rollout_eval
+from grading.gold_answer import normalize_gold_answer
+
+
+class GoldAnswerNormalizationTest(unittest.TestCase):
+    def test_deepscaler_short_answer_passes_through(self) -> None:
+        self.assertEqual(normalize_gold_answer("  \\frac{3}{7}  "), "\\frac{3}{7}")
+
+    def test_legacy_hash_marker_is_normalized_at_ingestion(self) -> None:
+        self.assertEqual(normalize_gold_answer("reasoning\n#### 42"), "42")
+
+
+class FakeTokenizer:
+    def apply_chat_template(
+        self,
+        messages,
+        *,
+        tokenize: bool,
+        add_generation_prompt: bool,
+        enable_thinking: bool,
+    ) -> str:
+        self.assert_chat_template_args(tokenize, add_generation_prompt, enable_thinking)
+        return messages[0]["content"] + "\nassistant:"
+
+    @staticmethod
+    def assert_chat_template_args(
+        tokenize: bool,
+        add_generation_prompt: bool,
+        enable_thinking: bool,
+    ) -> None:
+        if tokenize or not add_generation_prompt or enable_thinking:
+            raise AssertionError("Unexpected chat template arguments.")
+
+
+class RolloutEvalSampleTest(unittest.TestCase):
+    def test_build_rollout_eval_samples_uses_deepscaler_fields(self) -> None:
+        dataset = [{"problem": "  What is 6*7?  ", "answer": " 42 "}]
+
+        samples = rollout_eval.build_rollout_eval_samples(
+            tokenizer=FakeTokenizer(),
+            eval_source_dataset=dataset,
+            max_samples=0,
+            subset_seed=42,
+            question_field="problem",
+            answer_field="answer",
+        )
+
+        self.assertEqual(samples[0]["sample_id"], 0)
+        self.assertEqual(samples[0]["question"], "What is 6*7?")
+        self.assertEqual(samples[0]["gold_answer"], "42")
+        self.assertIn("What is 6*7?", samples[0]["prompt_text"])
 
 
 class MultiRolloutEvalTest(unittest.TestCase):

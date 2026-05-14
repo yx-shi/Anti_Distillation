@@ -275,6 +275,8 @@ src/pre_exp/
 
 - 对训练完成的 Student checkpoint 做 rollout grading
 - 汇总最终比较结果
+- 复用 `src/sft/rollout_eval.py` 中的离线 eval sample 构造与多 rollout
+  accuracy 聚合；训练主循环不再内嵌 greedy rollout / eval preview。
 
 ## 8. 产物格式
 

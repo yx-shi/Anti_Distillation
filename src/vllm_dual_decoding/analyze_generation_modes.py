@@ -18,7 +18,7 @@ if str(SRC_ROOT) not in sys.path:
 from vllm_dual_decoding.common import read_jsonl, write_json
 
 
-DEFAULT_OUTPUT_FILE = "result/vllm_dual_decoding/analysis/vllm_dual_data_smoke_gsm8k24/data_quality_summary.json"
+DEFAULT_OUTPUT_FILE = "result/vllm_dual_decoding/analysis/vllm_dual_deepscaler_smoke/data_quality_summary.json"
 
 
 def build_arg_parser() -> argparse.ArgumentParser:

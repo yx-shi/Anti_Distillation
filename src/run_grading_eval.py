@@ -1,6 +1,6 @@
-"""Standalone GSM8K rollout + grading script.
+"""Standalone math rollout + grading script.
 
-这个脚本的目标不是训练，而是把“模型生成 -> 提取答案 -> 提取 GSM8K gold -> 判分”
+这个脚本的目标不是训练，而是把“模型生成 -> 提取答案 -> 规范化 gold -> 判分”
 这条链路单独跑通。研究里常见的一个好习惯是：
 先把评测链路做成独立脚本验证通过，再把它接回训练框架。
 这样排错时更容易区分“模型没学会”和“评测管线接错了”。
@@ -25,13 +25,15 @@ from sft.hf_cache import ensure_writable_hf_datasets_cache
 def build_arg_parser() -> argparse.ArgumentParser:
     """Create the CLI for standalone rollout grading."""
 
-    parser = argparse.ArgumentParser(description="Generate one GSM8K sample and grade it with the local grading pipeline.")
-    parser.add_argument("--model-name-or-path", default="/data1/public_checkpoints/Qwen3-1.7B")
-    parser.add_argument("--dataset-name", default="openai/gsm8k")
-    parser.add_argument("--dataset-config-name", default="main")
-    parser.add_argument("--split", default="test")
+    parser = argparse.ArgumentParser(description="Generate one math sample and grade it with the local grading pipeline.")
+    parser.add_argument("--model-name-or-path", default="/home/disk1/public_checkpoint/Qwen3-1.7B")
+    parser.add_argument("--dataset-name", default="agentica-org/DeepScaleR-Preview-Dataset")
+    parser.add_argument("--dataset-config-name", default="default")
+    parser.add_argument("--split", default="train")
+    parser.add_argument("--question-field", default="problem")
+    parser.add_argument("--answer-field", default="answer")
     parser.add_argument("--sample-index", type=int, default=0)
-    parser.add_argument("--max-new-tokens", type=int, default=128)
+    parser.add_argument("--max-new-tokens", type=int, default=4096)
     parser.add_argument("--device", default="cuda")
     parser.add_argument(
         "--allow-remote-model-files",
@@ -46,7 +48,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--gold-answer",
         default=None,
-        help="Optional manual gold answer. For GSM8K-style answers, both full `reasoning + #### answer` and plain final answers are accepted.",
+        help="Optional manual gold answer. Plain final answers are expected; legacy `####` answers are also accepted.",
     )
     parser.add_argument(
         "--model-output",
@@ -59,14 +61,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
 def load_sample_from_args(args: argparse.Namespace) -> tuple[str, str, str]:
     """Resolve one evaluation sample either from the dataset or from manual CLI arguments."""
 
-    from sft.rollout_eval import extract_gsm8k_final_answer
+    from grading.gold_answer import normalize_gold_answer
 
     if args.question is not None:
         if args.gold_answer is None:
             raise ValueError("`--gold-answer` must be provided when `--question` is used.")
         question = args.question.strip()
         gold_answer_raw = args.gold_answer.strip()
-        gold_answer_final = extract_gsm8k_final_answer(gold_answer_raw)
+        gold_answer_final = normalize_gold_answer(gold_answer_raw)
         return question, gold_answer_raw, gold_answer_final
 
     from datasets import load_dataset
@@ -74,9 +76,9 @@ def load_sample_from_args(args: argparse.Namespace) -> tuple[str, str, str]:
     ensure_writable_hf_datasets_cache()
     dataset = load_dataset(args.dataset_name, args.dataset_config_name, split=args.split)
     sample = dataset[int(args.sample_index)]
-    question = sample["question"].strip()
-    gold_answer_raw = sample["answer"].strip()
-    gold_answer_final = extract_gsm8k_final_answer(gold_answer_raw)
+    question = str(sample[args.question_field]).strip()
+    gold_answer_raw = str(sample[args.answer_field]).strip()
+    gold_answer_final = normalize_gold_answer(gold_answer_raw)
     return question, gold_answer_raw, gold_answer_final
 
 

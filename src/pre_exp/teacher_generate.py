@@ -19,21 +19,21 @@ if str(PROJECT_ROOT) not in sys.path:
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+from grading.gold_answer import normalize_gold_answer
 from pre_exp.common import choose_subset_indices
 from sft.hf_cache import ensure_writable_hf_datasets_cache
 from sft.prompting import build_qwen3_messages, render_qwen3_prompt
-from sft.rollout_eval import extract_gsm8k_final_answer
 
 
-DEFAULT_TEACHER_MODEL = "/data1/public_checkpoints/Qwen3-8B"
+DEFAULT_TEACHER_MODEL = "/home/disk1/public_checkpoint/Qwen3-8B"
 DEFAULT_OUTPUT_FILE = "result/pre_exp/candidates/smoke/candidate_pool.jsonl"
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Generate Qwen3 teacher candidate responses for the smoke pre-experiment.")
+    parser = argparse.ArgumentParser(description="Generate Qwen3 teacher candidate responses for the pre-experiment.")
     parser.add_argument("--model-name-or-path", default=DEFAULT_TEACHER_MODEL)
-    parser.add_argument("--dataset-name", default="openai/gsm8k")
-    parser.add_argument("--dataset-config-name", default="main")
+    parser.add_argument("--dataset-name", default="agentica-org/DeepScaleR-Preview-Dataset")
+    parser.add_argument("--dataset-config-name", default="default")
     parser.add_argument("--split", default="train")
     parser.add_argument(
         "--question-field",
@@ -42,7 +42,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "数据集中题目文本所在的列名。"
             "Hugging Face datasets 会把每条样本表示成 dict；"
             "把列名做成参数，是适配不同数学数据集 schema 的常见范式。"
-            "例如 GSM8K 用 question，DeepScaleR-Preview-Dataset 用 problem。"
+            "例如 DeepScaleR-Preview-Dataset 用 problem。"
         ),
     )
     parser.add_argument(
@@ -50,8 +50,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default="answer",
         help=(
             "数据集中标准答案所在的列名。"
-            "GSM8K 的 answer 字段包含推理和 #### 最终答案，"
-            "DeepScaleR 的 answer 字段通常已经是短答案；后续会统一抽成 gold_answer。"
+            "DeepScaleR 的 answer 字段通常已经是短答案；"
+            "历史数据若带有 #### 标记，会在入口处统一规范化成 gold_answer。"
         ),
     )
     parser.add_argument("--max-samples", type=int, default=128)
@@ -64,13 +64,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--max-new-tokens",
         type=int,
-        default=512,
+        default=4096,
         help=(
             "Teacher 单条回答最多生成的新 token 数。"
-            "这里把默认值设成 512，而不是 256，原因是 Qwen3 在 GSM8K 上"
-            "经常会输出较完整的步骤化推理 + \\boxed{} 最终答案；"
-            "如果上限太小，容易在写到最终答案前被长度截断，进而显著拉低"
-            "候选有效率。"
+            "DeepScaleR 推理链较长；上限太小容易在最终答案前被截断。"
         ),
     )
     parser.add_argument("--seed", type=int, default=42)
@@ -96,7 +93,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--tensor-parallel-size", type=int, default=1)
     parser.add_argument("--dtype", default="bfloat16")
-    parser.add_argument("--max-model-len", type=int, default=2048)
+    parser.add_argument("--max-model-len", type=int, default=8192)
     parser.add_argument(
         "--max-num-seqs",
         type=int,
@@ -206,7 +203,7 @@ def main() -> None:
             {
                 "sample_id": int(dataset_idx),
                 "question": question,
-                "gold_answer": extract_gsm8k_final_answer(raw_answer),
+                "gold_answer": normalize_gold_answer(raw_answer),
                 "gold_answer_raw": raw_answer,
                 "messages": messages,
                 "prompt_text": prompt_text,

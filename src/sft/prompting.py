@@ -3,13 +3,13 @@ from __future__ import annotations
 from typing import Any
 
 
-GSM8K_QWEN3_FORMAT_INSTRUCTION = (
+MATH_QWEN3_FORMAT_INSTRUCTION = (
     "Please reason step by step, and put your final answer within \\boxed{}."
 )
 
 
 def build_qwen3_messages(question: str) -> list[dict[str, str]]:
-    """把 GSM8K 问题包装成 Qwen3 单轮对话消息。
+    """把数学题包装成 Qwen3 单轮对话消息。
 
     这里固定采用最简单、也是最容易和预实验对齐的形式：
     - 只构造一条 user message
@@ -30,7 +30,7 @@ def build_qwen3_messages(question: str) -> list[dict[str, str]]:
     normalized_question = question.strip()
     user_content = (
         f"{normalized_question}\n\n"
-        f"{GSM8K_QWEN3_FORMAT_INSTRUCTION}"
+        f"{MATH_QWEN3_FORMAT_INSTRUCTION}"
     )
     return [{"role": "user", "content": user_content}]
 

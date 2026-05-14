@@ -37,14 +37,13 @@ class TrainConfig:
     seed: int = 42
     max_steps: int = 100
     debug_fsdp: bool = False
-    # eval preview: 每次验证时额外生成一道固定题，方便肉眼观察模型当前输出风格。
+    # Deprecated compatibility flag: rollout/preview generation now lives in src/pre_exp/final_eval.py.
     eval_preview: bool = False
-    # rollout eval: 直接让模型做题并用 grading 判对错，比 val_loss 更贴近真实任务表现。
+    # Deprecated compatibility flag: trainer validation only reports LM loss / ppl.
     rollout_eval: bool = False
-    # 默认不在每次 eval 上跑完整个 test split，而是先抽一个固定大小的子集做近似评估。
-    # 这是训练工程里很常见的折中：降低评测开销，提升实验迭代速度。
+    # Kept so older launch scripts can still pass the argument without affecting training.
     rollout_eval_max_samples: int = 64
-    # rollout 最多生成多少个新 token。这个值太小会截断答案，太大会拖慢评测。
+    # Kept so older launch scripts can still pass the argument without affecting training.
     rollout_max_new_tokens: int = 512
     ignore_index: int = -100
     train_on_prompt: bool = False
@@ -56,7 +55,7 @@ class TrainConfig:
 def build_arg_parser() -> argparse.ArgumentParser:
     """Build a small CLI so common hyperparameters can be overridden from the shell."""
 
-    parser = argparse.ArgumentParser(description="Train a Qwen SFT model on GSM8K with PyTorch + FSDP.")
+    parser = argparse.ArgumentParser(description="Train a Qwen SFT model with PyTorch + FSDP.")
     parser.add_argument("--model-name-or-path", default="/data1/public_checkpoints/Qwen3-1.7B")
     parser.add_argument(
         "--dataset-format",
@@ -116,38 +115,38 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--eval-preview",
         dest="eval_preview",
         action="store_true",
-        help="Enable the fixed GSM8K preview generation during evaluation.",
+        help="Deprecated no-op. Preview generation has moved out of the trainer.",
     )
     parser.add_argument(
         "--disable-eval-preview",
         dest="eval_preview",
         action="store_false",
-        help="Disable the fixed GSM8K preview generation that otherwise runs during each evaluation.",
+        help="Deprecated no-op kept for launch-script compatibility.",
     )
     parser.add_argument(
         "--rollout-eval",
         dest="rollout_eval",
         action="store_true",
-        help="Enable rollout-based grading evaluation during validation.",
+        help="Deprecated no-op. Use src/pre_exp/final_eval.py for rollout grading.",
     )
     parser.add_argument(
         "--disable-rollout-eval",
         dest="rollout_eval",
         action="store_false",
-        help="Disable rollout-based grading evaluation during validation.",
+        help="Deprecated no-op kept for launch-script compatibility.",
     )
     parser.set_defaults(eval_preview=False, rollout_eval=False)
     parser.add_argument(
         "--rollout-eval-max-samples",
         type=int,
         default=64,
-        help="How many eval samples to score with rollout grading per evaluation. Use 0 to score the full eval split.",
+        help="Deprecated no-op kept for launch-script compatibility.",
     )
     parser.add_argument(
         "--rollout-max-new-tokens",
         type=int,
         default=512,
-        help="Maximum number of new tokens generated for each rollout evaluation sample.",
+        help="Deprecated no-op kept for launch-script compatibility.",
     )
     parser.add_argument("--train-on-prompt", action="store_true")
     parser.add_argument(

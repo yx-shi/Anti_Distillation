@@ -21,11 +21,19 @@ DeepScaleR 字段：
 ## Grading
 
 - 本项目主要使用 `grading/` 中的答案抽取与数学等价判分。
+- gold answer 在数据入口统一通过 `grading.gold_answer.normalize_gold_answer`
+  规范化。DeepScaleR `answer` 字段已经是短答案，因此这里只做 `strip()`；
+  历史 `####` 形式只作为兼容逻辑保留，不再以 GSM8K 专名暴露到主链路。
 - 候选答案先由 `grading.extract_ans.extract_final_ans` 抽取最终答案；当前实现优先接受最后一个 `\boxed{...}`，缺少 boxed 时回退到 `Final Answer:`。
 - 再由 `grading.grader.grade_answer` 与 gold answer 比较。
-- 对数学数据，prompt 统一要求模型把最终答案放入 `\boxed{}`。不再使用 GSM8K `#### ...`、泛自然语言或普通公式兜底抽取。
+- 对数学数据，prompt 统一要求模型把最终答案放入 `\boxed{}`。模型输出抽取不再使用 GSM8K `#### ...`、泛自然语言或普通公式兜底。
 
 ## Rollout Eval Metrics
+
+`src/sft/rollout_eval.py` 只保留离线 rollout grading 共享函数：构造 Qwen3
+rollout prompt、准备 eval samples、聚合多 rollout correctness。训练主循环不再
+内嵌 greedy rollout / eval preview；checkpoint 与 final rollout eval 由
+`src/pre_exp/final_eval.py` 离线消费 checkpoint。
 
 当前离线 rollout eval 对每道题采样 4 次，默认使用 `temperature=0.7`、`top_p=0.8`。每题先把 4 个 correctness 结果计算成：
 

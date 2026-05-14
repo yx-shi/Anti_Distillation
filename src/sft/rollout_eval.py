@@ -5,10 +5,6 @@ import sys
 from pathlib import Path
 from typing import Any, Callable
 
-import torch
-import torch.distributed as dist
-
-from sft.distributed import DistributedContext
 from sft.prompting import build_qwen3_prompt
 
 # `grading/` 目前是项目根目录下的独立包，而训练入口通常是 `python src/train_sft.py`。
@@ -18,12 +14,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from grading.gold_answer import normalize_gold_answer
 from pre_exp.common import choose_subset_indices, choose_subset_indices_from_pool
-
-EVAL_PREVIEW_QUESTION = (
-    "James decides to run 3 sprints 3 times a week. "
-    "He runs 60 meters each sprint. How many total meters does he run a week?"
-)
 
 
 def build_rollout_prompt(tokenizer, question: str) -> str:
@@ -66,20 +58,6 @@ def load_grading_functions() -> tuple[Callable[[str], str | None], Callable[[str
     return extract_final_ans, grade_answer
 
 
-def extract_gsm8k_final_answer(answer_text: str) -> str:
-    """Extract the final GSM8K answer from `reasoning + #### answer`.
-
-    GSM8K 的原始 `answer` 字段通常不是纯答案，而是一段推理再加上最后一行：
-    `#### 123`
-    因此在做自动评分时，gold answer 一般需要先抽成最终答案，再与模型输出比较。
-    """
-
-    text = answer_text.strip()
-    if "####" in text:
-        return text.split("####")[-1].strip()
-    return text
-
-
 def build_rollout_eval_samples(
     tokenizer,
     eval_source_dataset: Any,
@@ -119,28 +97,19 @@ def build_rollout_eval_samples(
             )
 
         question = str(sample[question_field]).strip()
-        raw_answer = str(sample[answer_field]).strip()
+        raw_answer = sample[answer_field]
         prepared_samples.append(
             {
                 "sample_id": int(dataset_idx),
                 "question": question,
-                "gold_answer": extract_gsm8k_final_answer(raw_answer),
+                "gold_answer": normalize_gold_answer(raw_answer),
                 "prompt_text": build_rollout_prompt(tokenizer, question),
             }
         )
     return prepared_samples
 
 
-def grade_rollout_predictions(
-    samples: list[dict[str, Any]],
-    generated_texts: list[str],
-) -> tuple[dict[str, float], list[dict[str, Any]]]:
-    """用统一的 grading 规则评估一批 rollout 输出。"""
-
-    return grade_multi_rollout_predictions(samples, [[text] for text in generated_texts])
-
-
-def population_variance(values: list[float], mean_value: float) -> float:
+def _population_variance(values: list[float], mean_value: float) -> float:
     if not values:
         return 0.0
     return sum((value - mean_value) ** 2 for value in values) / len(values)
@@ -197,7 +166,7 @@ def grade_multi_rollout_predictions(
             )
 
         sample_mean = sum(correctness_values) / len(correctness_values)
-        sample_variance = population_variance(correctness_values, sample_mean)
+        sample_variance = _population_variance(correctness_values, sample_mean)
         sample_means.append(sample_mean)
         sample_variances.append(sample_variance)
         expected_correct += sample_mean
@@ -232,146 +201,3 @@ def grade_multi_rollout_predictions(
         "num_rollouts": float(num_rollouts),
     }
     return metrics, eval_records
-
-
-def greedy_generate_completion(
-    model,
-    tokenizer,
-    runtime: DistributedContext,
-    question: str,
-    max_new_tokens: int,
-) -> str:
-    """Generate one answer with a small hand-written greedy decoding loop.
-
-    这里不直接调用 `model.generate(...)`，而是保留一个显式的 token-by-token 循环。
-    这样在 FSDP 场景里更容易控制每个 rank 的 forward 次数，并把生成逻辑和训练逻辑放在同一套
-    低层 PyTorch workflow 里，排障时也更直观。
-
-    一个重要细节是：这里故意不在遇到 EOS 后提前 `break`。
-    原因是多卡 FSDP 下，不同 rank 如果在不同时间提早结束，容易让 collective 次序失配。
-    固定迭代 `max_new_tokens` 次，是一种更稳妥的分布式范式。
-    """
-
-    prompt = build_rollout_prompt(tokenizer, question)
-    encoded = tokenizer(
-        prompt,
-        return_tensors="pt",
-        add_special_tokens=False,
-    )
-    input_ids = encoded["input_ids"].to(runtime.device)
-    attention_mask = encoded["attention_mask"].to(runtime.device)
-    prompt_length = input_ids.size(1)
-
-    for _ in range(max_new_tokens):
-        outputs = model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-        )
-        next_token = outputs.logits[:, -1, :].argmax(dim=-1, keepdim=True)
-        input_ids = torch.cat([input_ids, next_token], dim=-1)
-        attention_mask = torch.cat([attention_mask, torch.ones_like(next_token)], dim=-1)
-
-    generated_ids = input_ids[0, prompt_length:]
-    return tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
-
-
-def generate_eval_preview(
-    model,
-    tokenizer,
-    runtime: DistributedContext,
-    max_new_tokens: int,
-) -> dict[str, str]:
-    """Generate the fixed preview sample that is printed during evaluation."""
-
-    completion = greedy_generate_completion(
-        model=model,
-        tokenizer=tokenizer,
-        runtime=runtime,
-        question=EVAL_PREVIEW_QUESTION,
-        max_new_tokens=max_new_tokens,
-    )
-    return {
-        "question": EVAL_PREVIEW_QUESTION,
-        "completion": completion,
-    }
-
-
-def evaluate_rollout_accuracy(
-    model,
-    tokenizer,
-    eval_source_dataset: Any,
-    runtime: DistributedContext,
-    max_new_tokens: int,
-    max_samples: int,
-) -> dict[str, float]:
-    """Run rollout-based grading on the eval split.
-
-    这里的工作流是：
-    1. 取 eval 样本里的原始 question / answer
-    2. 用当前模型实际生成答案
-    3. 从生成结果里抽最终答案
-    4. 从 GSM8K gold 里抽 `####` 后的最终答案
-    5. 用 grading pipeline 判对错
-
-    和 `val_loss` 相比，这个指标更接近“模型真正做题时是否答对”。
-    """
-
-    extract_final_ans, grade_answer = load_grading_functions()
-
-    dataset_size = len(eval_source_dataset)
-    total_target_samples = dataset_size if max_samples <= 0 else min(dataset_size, max_samples)
-
-    if total_target_samples == 0:
-        return {"rollout_acc": 0.0, "rollout_correct": 0.0, "rollout_total": 0.0}
-
-    # 为了让 FSDP 下每个 rank 的 forward 次数一致，这里不是简单地“谁有多少样本就跑多少”，
-    # 而是把总样本数按 slot 排开。每个 slot 里所有 rank 都会做一次生成；
-    # 如果某个 rank 在该 slot 没有真实样本，就用一个 dummy question 占位参与 forward。
-    slots_per_rank = math.ceil(total_target_samples / runtime.world_size)
-    dummy_question = EVAL_PREVIEW_QUESTION
-
-    local_correct = 0
-    local_total = 0
-
-    for slot_idx in range(slots_per_rank):
-        global_sample_idx = slot_idx * runtime.world_size + runtime.rank
-        has_real_sample = global_sample_idx < total_target_samples
-
-        if has_real_sample:
-            sample = eval_source_dataset[int(global_sample_idx)]
-            question = sample["question"].strip()
-            gold_answer = extract_gsm8k_final_answer(sample["answer"])
-        else:
-            question = dummy_question
-            gold_answer = ""
-
-        model_output = greedy_generate_completion(
-            model=model,
-            tokenizer=tokenizer,
-            runtime=runtime,
-            question=question,
-            max_new_tokens=max_new_tokens,
-        )
-
-        if has_real_sample:
-            predicted_answer = extract_final_ans(model_output)
-            is_correct = predicted_answer is not None and grade_answer(predicted_answer, gold_answer)
-            local_correct += int(is_correct)
-            local_total += 1
-
-    correct_tensor = torch.tensor(float(local_correct), device=runtime.device)
-    total_tensor = torch.tensor(float(local_total), device=runtime.device)
-
-    if runtime.use_fsdp:
-        dist.all_reduce(correct_tensor, op=dist.ReduceOp.SUM)
-        dist.all_reduce(total_tensor, op=dist.ReduceOp.SUM)
-
-    rollout_correct = correct_tensor.item()
-    rollout_total = total_tensor.item()
-    rollout_acc = rollout_correct / rollout_total if rollout_total > 0 else 0.0
-
-    return {
-        "rollout_acc": rollout_acc,
-        "rollout_correct": rollout_correct,
-        "rollout_total": rollout_total,
-    }

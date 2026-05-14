@@ -19,9 +19,9 @@ if str(PROJECT_ROOT) not in sys.path:
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+from grading.gold_answer import normalize_gold_answer
 from sft.hf_cache import ensure_writable_hf_datasets_cache
 from sft.prompting import build_qwen3_messages, render_qwen3_prompt
-from sft.rollout_eval import extract_gsm8k_final_answer
 from vllm_dual_decoding.common import append_jsonl, choose_subset_indices
 
 
@@ -42,10 +42,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="`plain` uses ordinary vLLM; `hard` and `soft` enable vLLM-dual.",
     )
     parser.add_argument("--student-model-name-or-path", default=DEFAULT_STUDENT_MODEL)
-    parser.add_argument("--dataset-name", default="openai/gsm8k")
-    parser.add_argument("--dataset-config-name", default="main")
+    parser.add_argument("--dataset-name", default="agentica-org/DeepScaleR-Preview-Dataset")
+    parser.add_argument("--dataset-config-name", default="default")
     parser.add_argument("--split", default="train")
-    parser.add_argument("--question-field", default="question")
+    parser.add_argument("--question-field", default="problem")
     parser.add_argument("--answer-field", default="answer")
     parser.add_argument("--max-samples", type=int, default=24)
     parser.add_argument("--subset-seed", type=int, default=42)
@@ -54,7 +54,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--num-candidates", type=int, default=1)
     parser.add_argument("--temperature", type=float, default=0.7)
     parser.add_argument("--top-p", type=float, default=0.9)
-    parser.add_argument("--max-new-tokens", type=int, default=512)
+    parser.add_argument("--max-new-tokens", type=int, default=4096)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output-file", default=DEFAULT_OUTPUT_FILE)
     parser.add_argument("--prompt-batch-size", type=int, default=8)
@@ -62,7 +62,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tensor-parallel-size", type=int, default=1)
     parser.add_argument("--small-tensor-parallel-size", type=int, default=1)
     parser.add_argument("--dtype", default="bfloat16")
-    parser.add_argument("--max-model-len", type=int, default=2048)
+    parser.add_argument("--max-model-len", type=int, default=8192)
     parser.add_argument("--max-num-seqs", type=int, default=16)
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.7)
     parser.add_argument("--small-gpu-memory-utilization", type=float, default=0.35)
@@ -181,7 +181,7 @@ def main() -> None:
             {
                 "sample_id": int(dataset_idx),
                 "question": question,
-                "gold_answer": extract_gsm8k_final_answer(raw_answer),
+                "gold_answer": normalize_gold_answer(raw_answer),
                 "gold_answer_raw": raw_answer,
                 "messages": messages,
                 "prompt_text": prompt_text,
