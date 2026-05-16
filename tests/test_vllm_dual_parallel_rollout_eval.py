@@ -6,6 +6,7 @@ from pathlib import Path
 
 from src.vllm_dual_decoding.run_parallel_rollout_eval import (
     EvalJob,
+    build_arg_parser,
     build_eval_command,
     build_plot_command,
     collect_eval_jobs,
@@ -15,6 +16,11 @@ from src.vllm_dual_decoding.run_parallel_rollout_eval import (
 
 
 class VllmDualParallelRolloutEvalTest(unittest.TestCase):
+    def test_default_eval_max_num_seqs_is_128(self) -> None:
+        args = build_arg_parser().parse_args([])
+
+        self.assertEqual(args.max_num_seqs, 128)
+
     def test_discover_eval_jobs_includes_base_retained_checkpoints_and_final(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -49,6 +55,7 @@ class VllmDualParallelRolloutEvalTest(unittest.TestCase):
                 ("final_checkpoint", 1600, "final_checkpoint"),
             ],
         )
+        self.assertEqual(jobs[0].output_file, root / "analysis" / "eval" / "checkpoint_eval_teacher_plain_000000.json")
 
     def test_gpu_batches_assigns_one_gpu_per_job(self) -> None:
         jobs = [
@@ -158,7 +165,7 @@ class VllmDualParallelRolloutEvalTest(unittest.TestCase):
                 "--run-dir",
                 "/runs/exp",
                 "--analysis-dir",
-                "/analysis/exp",
+                "/analysis/exp/eval",
                 "--output-dir",
                 "/analysis/exp/curves",
                 "--modes",

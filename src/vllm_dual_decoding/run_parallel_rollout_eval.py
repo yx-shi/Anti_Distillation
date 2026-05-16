@@ -89,7 +89,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sampling-seed", type=int, default=42)
     parser.add_argument("--tensor-parallel-size", type=int, default=1)
     parser.add_argument("--max-model-len", type=int, default=8192)
-    parser.add_argument("--max-num-seqs", type=int, default=32)
+    parser.add_argument("--max-num-seqs", type=int, default=128)
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.85)
     parser.add_argument("--trust-remote-code", action="store_true")
     parser.add_argument("--use-tqdm", action="store_true")
@@ -140,6 +140,7 @@ def discover_eval_jobs_for_mode(
 ) -> list[EvalJob]:
     if not mode_dir.is_dir():
         raise FileNotFoundError(f"Mode run directory does not exist: {mode_dir}")
+    eval_dir = analysis_dir / "eval"
 
     jobs = [
         EvalJob(
@@ -147,7 +148,7 @@ def discover_eval_jobs_for_mode(
             label="000000",
             step=0,
             model_path=Path(base_model),
-            output_file=analysis_dir / f"checkpoint_eval_{mode}_000000.json",
+            output_file=eval_dir / f"checkpoint_eval_{mode}_000000.json",
         )
     ]
 
@@ -162,7 +163,7 @@ def discover_eval_jobs_for_mode(
                 label=label,
                 step=step,
                 model_path=checkpoint_dir,
-                output_file=analysis_dir / f"checkpoint_eval_{mode}_{label}.json",
+                output_file=eval_dir / f"checkpoint_eval_{mode}_{label}.json",
             )
         )
 
@@ -174,7 +175,7 @@ def discover_eval_jobs_for_mode(
                 label="final_checkpoint",
                 step=final_step_from_train_config(mode_dir),
                 model_path=final_checkpoint,
-                output_file=analysis_dir / f"checkpoint_eval_{mode}_final_checkpoint.json",
+                output_file=eval_dir / f"checkpoint_eval_{mode}_final_checkpoint.json",
             )
         )
     return jobs
@@ -306,7 +307,7 @@ def build_plot_command(
         "--run-dir",
         str(run_dir),
         "--analysis-dir",
-        str(analysis_dir),
+        str(analysis_dir / "eval"),
         "--output-dir",
         str(analysis_dir / "curves"),
         "--modes",
@@ -552,6 +553,7 @@ def main() -> None:
     analysis_dir = Path(args.result_root) / "analysis" / args.experiment_name
     log_dir = analysis_dir / "logs" / "parallel_rollout_eval"
     analysis_dir.mkdir(parents=True, exist_ok=True)
+    (analysis_dir / "eval").mkdir(parents=True, exist_ok=True)
     log_dir.mkdir(parents=True, exist_ok=True)
     modes = list(args.modes)
     jobs_by_mode = collect_eval_jobs(
@@ -591,7 +593,7 @@ def main() -> None:
 
     for mode in modes:
         if not args.dry_run:
-            summary_file = analysis_dir / f"checkpoint_eval_{mode}.json"
+            summary_file = analysis_dir / "eval" / f"checkpoint_eval_{mode}.json"
             collect_mode_summary(mode, jobs_by_mode[mode], summary_file)
             print(
                 "parallel_rollout_eval_mode_done "
