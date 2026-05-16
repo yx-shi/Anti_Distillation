@@ -31,7 +31,41 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--analysis-dir", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--modes", nargs="+", default=list(DEFAULT_MODES))
+    parser.add_argument(
+        "--mode-dir",
+        action="append",
+        default=[],
+        metavar="MODE=PATH",
+        help=(
+            "Optional explicit train/run directory for one mode. "
+            "May be repeated; useful when token-level runs are keyed by run_id."
+        ),
+    )
+    parser.add_argument(
+        "--analysis-file",
+        action="append",
+        default=[],
+        metavar="MODE=PATH",
+        help=(
+            "Optional explicit rollout/final-eval JSON for one mode. "
+            "May be repeated; files are merged with --analysis-dir discovery."
+        ),
+    )
     return parser
+
+
+def parse_mode_path_mapping(values: list[str], *, option_name: str) -> dict[str, Path]:
+    mapping: dict[str, Path] = {}
+    for raw_value in values:
+        if "=" not in raw_value:
+            raise ValueError(f"{option_name} entries must use MODE=PATH format: {raw_value!r}")
+        mode, raw_path = raw_value.split("=", 1)
+        mode = mode.strip()
+        raw_path = raw_path.strip()
+        if not mode or not raw_path:
+            raise ValueError(f"{option_name} entries must use non-empty MODE=PATH: {raw_value!r}")
+        mapping[mode] = Path(raw_path)
+    return mapping
 
 
 def read_json(path: Path) -> Any:
@@ -194,27 +228,29 @@ def load_rollout_metrics(
     analysis_dir: Path,
     modes: list[str],
     final_steps: dict[str, int | None],
+    analysis_files: dict[str, Path] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     by_mode = {mode: [] for mode in modes}
-    if not analysis_dir.is_dir():
-        return by_mode
+    explicit_files = analysis_files or {}
 
-    for json_path in sorted(analysis_dir.glob("*.json")):
+    def add_rollout_metric(json_path: Path, mode_hint: str | None = None) -> None:
         try:
             payload = read_json(json_path)
-        except json.JSONDecodeError:
-            continue
+        except (FileNotFoundError, json.JSONDecodeError):
+            return
         if not isinstance(payload, dict) or not isinstance(payload.get("metrics"), dict):
-            continue
+            return
         rollout_acc = as_float(payload["metrics"].get("rollout_acc"))
         if rollout_acc is None:
-            continue
-        mode = infer_mode_from_payload(json_path, payload, modes)
+            return
+        mode = mode_hint or infer_mode_from_payload(json_path, payload, modes)
         if mode is None:
-            continue
+            return
+        if mode not in by_mode:
+            return
         step = rollout_step(payload, json_path, final_steps, mode)
         if step is None:
-            continue
+            return
         by_mode[mode].append(
             {
                 "step": step,
@@ -226,6 +262,13 @@ def load_rollout_metrics(
                 "source": str(json_path),
             }
         )
+
+    for mode, json_path in sorted(explicit_files.items()):
+        add_rollout_metric(json_path, mode_hint=mode)
+
+    if analysis_dir.is_dir():
+        for json_path in sorted(analysis_dir.glob("*.json")):
+            add_rollout_metric(json_path)
 
     for mode in modes:
         by_mode[mode] = dedupe_rollout_points(by_mode[mode])
@@ -260,12 +303,19 @@ def dedupe_points(
     return sorted(seen.values(), key=lambda item: (item.get("step", 0), str(item.get("source", ""))))
 
 
-def collect_curve_data(run_dir: Path, analysis_dir: Path, modes: list[str]) -> dict[str, Any]:
+def collect_curve_data(
+    run_dir: Path,
+    analysis_dir: Path,
+    modes: list[str],
+    mode_dirs: dict[str, Path] | None = None,
+    analysis_files: dict[str, Path] | None = None,
+) -> dict[str, Any]:
     mode_data: dict[str, Any] = {}
     final_steps: dict[str, int | None] = {}
+    explicit_mode_dirs = mode_dirs or {}
 
     for mode in modes:
-        mode_dir = run_dir / mode
+        mode_dir = explicit_mode_dirs.get(mode, run_dir / mode)
         train_loss, log_eval, log_final_step = parse_train_log(mode_dir / "train.log")
         config_final_step = parse_train_config(mode_dir / "train_config.json")
         observed_steps = [as_int(point.get("step")) for point in train_loss + log_eval]
@@ -284,7 +334,12 @@ def collect_curve_data(run_dir: Path, analysis_dir: Path, modes: list[str]) -> d
             "rollout_accuracy": [],
         }
 
-    rollout_metrics = load_rollout_metrics(analysis_dir, modes, final_steps)
+    rollout_metrics = load_rollout_metrics(
+        analysis_dir,
+        modes,
+        final_steps,
+        analysis_files=analysis_files,
+    )
     for mode in modes:
         mode_data[mode]["rollout_accuracy"] = rollout_metrics[mode]
 
@@ -606,8 +661,16 @@ def main() -> None:
     analysis_dir = Path(args.analysis_dir)
     output_dir = Path(args.output_dir)
     modes = list(args.modes)
+    mode_dirs = parse_mode_path_mapping(args.mode_dir, option_name="--mode-dir")
+    analysis_files = parse_mode_path_mapping(args.analysis_file, option_name="--analysis-file")
 
-    curve_data = collect_curve_data(run_dir=run_dir, analysis_dir=analysis_dir, modes=modes)
+    curve_data = collect_curve_data(
+        run_dir=run_dir,
+        analysis_dir=analysis_dir,
+        modes=modes,
+        mode_dirs=mode_dirs,
+        analysis_files=analysis_files,
+    )
     outputs = write_outputs(curve_data=curve_data, output_dir=output_dir)
     for path in outputs:
         print(f"wrote {path}", flush=True)

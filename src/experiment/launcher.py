@@ -114,6 +114,8 @@ class ExperimentLauncher:
             return self._train_plan(normalized_mode)
         if normalized_stage == "eval":
             return self._eval_plan(normalized_mode)
+        if normalized_stage == "plot":
+            return self._plot_plan(normalized_mode)
         raise ValueError(f"Unsupported stage: {stage}")
 
     def run_stage(
@@ -139,6 +141,17 @@ class ExperimentLauncher:
             self._run_single_command_stage(plan, allow_overwrite=True, outputs=[])
         elif plan.stage == "eval":
             self._run_single_command_stage(plan, allow_overwrite=allow_overwrite, outputs=[plan.paths.final_eval_file])
+        elif plan.stage == "plot":
+            self._run_single_command_stage(
+                plan,
+                allow_overwrite=allow_overwrite,
+                outputs=[
+                    plan.paths.curve_dir / "curve_data.json",
+                    plan.paths.curve_dir / "train_loss_curve.svg",
+                    plan.paths.curve_dir / "val_loss_ppl_curve.svg",
+                    plan.paths.curve_dir / "rollout_accuracy_curve.svg",
+                ],
+            )
         else:
             raise ValueError(f"Unsupported stage: {plan.stage}")
         return plan
@@ -151,7 +164,8 @@ class ExperimentLauncher:
             f"scored_file={plan.paths.scored_file} "
             f"distill_file={plan.paths.distill_file} "
             f"run_dir={plan.paths.run_dir} "
-            f"analysis_dir={plan.paths.analysis_dir}",
+            f"analysis_dir={plan.paths.analysis_dir} "
+            f"curve_dir={plan.paths.curve_dir}",
             flush=True,
         )
         for command in plan.commands:
@@ -473,6 +487,38 @@ class ExperimentLauncher:
             paths.run_id,
             paths,
             [CommandSpec(argv=argv, env=_base_env({"CUDA_VISIBLE_DEVICES": gpu_id}), log_file=paths.log_dir / "final_eval.log")],
+        )
+
+    def _plot_plan(self, mode: str) -> StagePlan:
+        paths = paths_for_mode(self.config, mode)
+        argv = [
+            *self._command_base(),
+            "src/pre_exp/plot_curves.py",
+            "--run-dir",
+            str(paths.run_dir.parent),
+            "--analysis-dir",
+            str(paths.analysis_dir),
+            "--output-dir",
+            str(paths.curve_dir),
+            "--modes",
+            mode,
+            "--mode-dir",
+            f"{mode}={paths.run_dir}",
+            "--analysis-file",
+            f"{mode}={paths.final_eval_file}",
+        ]
+        return StagePlan(
+            "plot",
+            mode,
+            paths.run_id,
+            paths,
+            [
+                CommandSpec(
+                    argv=argv,
+                    env={"PYTHONUNBUFFERED": "1"},
+                    log_file=paths.log_dir / "plot_curves.log",
+                )
+            ],
         )
 
     def _run_teacher_generate(self, plan: StagePlan, *, allow_overwrite: bool) -> None:

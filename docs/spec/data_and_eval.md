@@ -82,7 +82,7 @@ conda run --no-capture-output -n adistill-unified python src/run_experiment.py \
   --dry-run
 ```
 
-`--stage` 支持 `teacher_generate`、`student_score`/`students_score`、`build_distill`、`train`、`eval`。`train` 和 `eval` 不会默认运行，必须显式指定 stage。
+`--stage` 支持 `teacher_generate`、`student_score`/`students_score`、`build_distill`、`train`、`eval`、`plot`/`curves`。`train`、`eval` 和 `plot` 不会默认运行，必须显式指定 stage。`plot` 阶段复用 `src/pre_exp/plot_curves.py`，把当前 run_id 的 `train.log`、`final_metrics.json` 和 `final_eval.json` 汇总到 `result/vllm_dual_decoding/analysis/{run_id}/curves/`。
 
 建议模式名：
 

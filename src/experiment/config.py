@@ -29,6 +29,10 @@ STAGE_ALIASES = {
     "build_distill": "build_distill",
     "train": "train",
     "eval": "eval",
+    "plot": "plot",
+    "plots": "plot",
+    "curves": "plot",
+    "plot_curves": "plot",
 }
 
 

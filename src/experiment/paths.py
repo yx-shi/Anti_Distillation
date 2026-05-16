@@ -21,6 +21,7 @@ class ExperimentPaths:
     run_dir: Path
     analysis_dir: Path
     log_dir: Path
+    curve_dir: Path
     final_eval_file: Path
 
 
@@ -46,5 +47,6 @@ def paths_for_mode(config: ExperimentConfig, mode: str) -> ExperimentPaths:
         run_dir=run_root / run_id,
         analysis_dir=analysis_dir,
         log_dir=analysis_dir / "logs",
+        curve_dir=analysis_dir / "curves",
         final_eval_file=analysis_dir / "final_eval.json",
     )

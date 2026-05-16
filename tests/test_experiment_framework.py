@@ -182,6 +182,47 @@ class LauncherDryRunPlanTest(unittest.TestCase):
         self.assertNotIn("--soft-student-weight", first.argv)
         self.assertNotIn("--soft-temperature", first.argv)
 
+    def test_plot_plan_wires_token_level_paths_to_curve_script(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "gsm8k.yaml"
+            config_path.write_text(
+                "\n".join(
+                    [
+                        "experiment_group: smoke",
+                        "dataset: gsm8k",
+                        "modes: [teacher_plain]",
+                        "paths:",
+                        "  result_root: /tmp/adistill-results",
+                        "  run_root: /tmp/adistill-runs",
+                        "generation:",
+                        "  max_samples: 8",
+                        "  subset_seed: 123",
+                        "  temperature: 0.7",
+                        "  top_p: 0.8",
+                        "  hard_candidate_top_k:",
+                        "  soft_student_weight:",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            config = load_experiment_config(config_path)
+
+        launcher = ExperimentLauncher(config)
+        plan = launcher.build_stage_plan("curves", "teacher_plain")
+        run_id = config.run_id_for_mode("teacher_plain")
+        command = plan.commands[0]
+
+        self.assertEqual(plan.stage, "plot")
+        self.assertEqual(plan.paths.curve_dir, Path("/tmp/adistill-results") / "analysis" / run_id / "curves")
+        self.assertIn("src/pre_exp/plot_curves.py", command.argv)
+        self.assertIn("--mode-dir", command.argv)
+        self.assertIn(f"teacher_plain=/tmp/adistill-runs/{run_id}", command.argv)
+        self.assertIn("--analysis-file", command.argv)
+        self.assertIn(
+            f"teacher_plain=/tmp/adistill-results/analysis/{run_id}/final_eval.json",
+            command.argv,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
