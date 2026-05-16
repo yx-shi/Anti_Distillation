@@ -60,16 +60,33 @@ def extract_final_answer_marker(text):
     return answer, pos + len(marker)
 
 
+def extract_final_hash_marker(text):
+    """Extract the final answer after a GSM8K-style `####` marker."""
+
+    marker = "####"
+    pos = text.rfind(marker)
+    if pos < 0:
+        return None, None
+    answer = text[pos + len(marker):].strip()
+    if not answer:
+        return None, None
+    return answer, pos + len(marker)
+
+
 # 当前预实验 prompt 统一要求最终答案写入 `\boxed{}`，因此 boxed 是首选。
 # `Final Answer:` 是实际 Teacher 输出里常见的轻量兜底；不恢复 GSM8K
 # `#### ...`、自然语言或普通公式兜底，避免把中间推导误当作最终答案。
 extract_fns = [extract_final_boxed, extract_final_answer_marker]
 
 
-def extract_final_ans(text):
-    """优先返回 boxed 答案；缺少 boxed 时回退到 `Final Answer:`。"""
+def extract_final_ans(text, *, allow_hash_fallback=False):
+    """优先返回 boxed 答案；缺少 boxed 时回退到配置允许的轻量 marker。"""
 
-    for fn in extract_fns:
+    active_extract_fns = list(extract_fns)
+    if allow_hash_fallback:
+        active_extract_fns.append(extract_final_hash_marker)
+
+    for fn in active_extract_fns:
         try:
             result, _ = fn(text)
             if result:

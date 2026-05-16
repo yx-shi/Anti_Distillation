@@ -81,6 +81,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--trust-remote-code", action="store_true")
     parser.add_argument("--use-tqdm", action="store_true")
     parser.add_argument("--allow-remote-model-files", action="store_true")
+    parser.add_argument(
+        "--allow-hash-answer-fallback",
+        action="store_true",
+        help="Enable GSM8K-style `#### final_answer` extraction fallback during rollout grading.",
+    )
     parser.add_argument("--checkpoint-label-override", default="")
     parser.add_argument("--checkpoint-step-override", type=int, default=None)
     return parser
@@ -240,7 +245,11 @@ def run_hf_rollout_eval(
                 sample_texts.append(tokenizer.decode(generated_ids, skip_special_tokens=True).strip())
             generated_texts_by_sample.append(sample_texts)
 
-    metrics, eval_records = grade_multi_rollout_predictions(samples, generated_texts_by_sample)
+    metrics, eval_records = grade_multi_rollout_predictions(
+        samples,
+        generated_texts_by_sample,
+        allow_hash_answer_fallback=args.allow_hash_answer_fallback,
+    )
     return metrics, eval_records
 
 
@@ -303,7 +312,11 @@ def run_vllm_rollout_eval(
         if llm is not None:
             shutdown_llm(llm)
 
-    metrics, eval_records = grade_multi_rollout_predictions(samples, generated_texts_by_sample)
+    metrics, eval_records = grade_multi_rollout_predictions(
+        samples,
+        generated_texts_by_sample,
+        allow_hash_answer_fallback=args.allow_hash_answer_fallback,
+    )
     return metrics, eval_records
 
 
@@ -346,6 +359,7 @@ def evaluate_checkpoint(
         "subset_seed": args.subset_seed,
         "exclude_subset_max_samples": args.exclude_subset_max_samples,
         "exclude_subset_seed": args.exclude_subset_seed,
+        "allow_hash_answer_fallback": args.allow_hash_answer_fallback,
         "eligible_sample_count": (
             len(resolve_candidate_indices(dataset, args))
             if args.exclude_subset_max_samples > 0
@@ -431,6 +445,7 @@ def main() -> None:
                 "subset_seed": args.subset_seed,
                 "exclude_subset_max_samples": args.exclude_subset_max_samples,
                 "exclude_subset_seed": args.exclude_subset_seed,
+                "allow_hash_answer_fallback": args.allow_hash_answer_fallback,
                 "checkpoints": summary_rows,
             },
         )

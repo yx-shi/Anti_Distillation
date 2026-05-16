@@ -34,7 +34,7 @@ vLLM-dual 已在 vLLM 0.8.5 V0 路径中实现 hard/soft token-level adversarial
 
 - Teacher/Student tokenizer 和 vocab shape 必须对齐；不对齐会在 `DualModelWorker` 中报 tensor shape mismatch。
 - worker-level smoke 默认用 Qwen3-1.7B 作为 reasoner、Qwen2.5-0.5B-Instruct 作为 controller，适合快速验证 DualModelWorker 链路；正式 data-side smoke 使用项目默认 Teacher/Student 组合：Qwen3-8B Teacher + Qwen3-1.7B Student。
-- `scripts/run_vllm_dual_data_smoke.sh` 是当前 token-level data-side 入口，默认 DeepScaleR 10000 条，只运行 candidate -> score -> analysis，不进入 SFT 和 eval。正式默认采用三种模式顺序运行、每种模式内部 8 个 TP=1 shard 并发的口径。
+- `src/run_experiment.py` 是当前 token-level 主入口，读取 `configs/deepscaler.yaml` 或 `configs/gsm8k.yaml` 后按 stage 调用现有生成、打分、distill、训练和 eval 脚本。旧 `scripts/dual_decoding/*.sh` 已迁到 `scripts/archive/dual_decoding/` 作为历史参考。
 
 2026-04-27 验证状态：
 
@@ -53,8 +53,8 @@ vLLM-dual 已在 vLLM 0.8.5 V0 路径中实现 hard/soft token-level adversarial
 - hard worker smoke 通过，日志包含 `SMOKE_DUAL_EFFECTIVE ... adv_mode=hard` 和 `ADISTILL_DUAL_ADVERSARIAL enabled mode=hard`。
 - soft worker smoke 通过，日志包含 `SMOKE_DUAL_EFFECTIVE ... adv_mode=soft` 和 `ADISTILL_DUAL_ADVERSARIAL enabled mode=soft`。
 - DeepScaleR 1 条、16 token micro data chain 通过：plain 走 `vllm.worker.worker.Worker`，hard/soft 走 `vllm.worker.dual_worker.DualModelWorker`，三种模式都产出 `candidate_pool.jsonl`、`scored_candidates.jsonl` 和 `data_quality_summary.json`。
-- `scripts/run_vllm_dual_data_smoke.sh` 已准备为 DeepScaleR 10000 条正式 data build：`MAX_SAMPLES=10000`，`GENERATION_GPU_IDS=0..7`，`GENERATION_NUM_SHARDS=8`，`TEACHER_TP_SIZE=1`，三种模式顺序运行，每种模式内 8 卡 replica 并发，默认输出根目录为 `/home/disk2/shiyixuan/Anti_Distillation/result/vllm_dual_decoding`。
-- 2026-05-14 已新增 token-level full pipeline 入口：`src/vllm_dual_decoding/build_distill_dataset.py` 将每个 generation mode 的 `scored_candidates.jsonl` 转成 SFT-ready `distill_*.jsonl`；`src/vllm_dual_decoding/run_full_pipeline.py` 可串联 `build_distill`、`build_holdout`、`train`、`checkpoint_eval`、`final_eval`。DeepScaleR 8000 条三组数据已完成 distill JSONL 与 1024 条 holdout eval JSONL 构建；尚未启动长训练或 GPU rollout eval。
+- token-level 配置驱动入口支持 DeepScaleR 和 GSM8K：`src/run_experiment.py --config configs/deepscaler.yaml --stage teacher_generate --mode teacher_plain --dry-run`。输出按 run_id 写入 `result/vllm_dual_decoding/{candidates,datasets,analysis}/{run_id}`，训练 checkpoint 写入 `/home/disk2/shiyixuan/Anti_Distillation/result/vllm_dual_decoding/runs/{run_id}`。
+- 2026-05-14 已新增 token-level full pipeline 入口：`src/vllm_dual_decoding/build_distill_dataset.py` 将每个 generation mode 的 `scored_candidates.jsonl` 转成 SFT-ready `distill_*.jsonl`。DeepScaleR 8000 条三组数据已完成 distill JSONL 与 1024 条 holdout eval JSONL 构建；尚未启动长训练或 GPU rollout eval。2026-05-16 后 stage 编排改由 `src/run_experiment.py` 负责。
 
 ## 1. 目录职责
 
@@ -186,7 +186,7 @@ ADISTILL_DUAL_ADVERSARIAL enabled mode=hard
 ADISTILL_DUAL_ADVERSARIAL enabled mode=soft
 ```
 
-当前 data-side smoke 串联脚本为 `scripts/run_vllm_dual_data_smoke.sh`，只运行生成、Student NLL 打分和数据质量分析，不运行 SFT 训练。
+当前 data-side / full pipeline 主入口为 `src/run_experiment.py`，只在显式指定对应 `--stage` 时运行生成、Student NLL 打分、distill 构建、SFT 训练或 rollout eval。
 
 ## 5. 判断是否启用 dual worker
 

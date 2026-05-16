@@ -45,6 +45,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default="auto",
     )
     parser.add_argument("--allow-remote-model-files", action="store_true")
+    parser.add_argument(
+        "--allow-hash-answer-fallback",
+        action="store_true",
+        help="Enable GSM8K-style `#### final_answer` extraction fallback.",
+    )
     return parser
 
 
@@ -142,7 +147,14 @@ def main() -> None:
 
     for record_idx, record in enumerate(raw_records):
         candidate_text_raw = normalize_completion_text(str(record.get("candidate_text", "")))
-        extracted_answer = extract_final_ans(candidate_text_raw) if candidate_text_raw else None
+        extracted_answer = (
+            extract_final_ans(
+                candidate_text_raw,
+                allow_hash_fallback=args.allow_hash_answer_fallback,
+            )
+            if candidate_text_raw
+            else None
+        )
         finish_reason = str(record.get("finish_reason") or "")
         stop_reason = str(record.get("stop_reason") or "")
         is_empty = candidate_text_raw == ""
@@ -164,6 +176,7 @@ def main() -> None:
                 "student_mean_nll": None,
                 "student_token_count": 0,
                 "score_truncated": False,
+                "answer_extraction_allow_hash_fallback": args.allow_hash_answer_fallback,
             }
         )
         scored_records.append(enriched_record)

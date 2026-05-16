@@ -26,6 +26,11 @@
 - `task/vllm_dual_full_smoke_pipeline.md`：vLLM-dual hard/soft 独立 token-level 链路；先做 data-side smoke，再扩展完整 smoke 的任务卡。
 - `task/documentation_maintenance.md`：长任务结束后的文档维护任务卡。
 
+## Configs
+
+- `configs/deepscaler.yaml`：token-level DeepScaleR 主实验配置。
+- `configs/gsm8k.yaml`：token-level GSM8K 主实验配置。
+
 ## Archive
 
 - `archive/Anti_Distillation.pdf`：历史 PDF 材料，默认不需要读取。

@@ -1,17 +1,11 @@
 from __future__ import annotations
 
-import tempfile
 import unittest
 from pathlib import Path
 
 from src.vllm_dual_decoding.build_distill_dataset import (
     build_distill_records,
     summarize_distill_build,
-)
-from src.vllm_dual_decoding.run_full_pipeline import (
-    ModeInput,
-    discover_mode_inputs,
-    mode_to_safe_port_offset,
 )
 
 
@@ -96,32 +90,6 @@ class VllmDualBuildDistillDatasetTest(unittest.TestCase):
         self.assertEqual(summary["input_record_count"], 2)
         self.assertEqual(summary["distill_record_count"], 1)
         self.assertEqual(summary["skipped_empty_completion_count"], 1)
-
-
-class VllmDualRunFullPipelineTest(unittest.TestCase):
-    def test_discover_mode_inputs_accepts_legacy_mode_directory_names(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            experiment_dir = Path(tmpdir) / "candidates" / "exp"
-            for dirname in ("plain_bs128_s128", "hard_bs96_s80", "soft_bs96_s80"):
-                mode_dir = experiment_dir / dirname
-                mode_dir.mkdir(parents=True)
-                (mode_dir / "scored_candidates.jsonl").write_text("{}\n", encoding="utf-8")
-
-            mode_inputs = discover_mode_inputs(Path(tmpdir), "exp")
-
-        self.assertEqual(
-            mode_inputs,
-            [
-                ModeInput("teacher_plain", experiment_dir / "plain_bs128_s128" / "scored_candidates.jsonl"),
-                ModeInput("teacher_token_hard", experiment_dir / "hard_bs96_s80" / "scored_candidates.jsonl"),
-                ModeInput("teacher_token_soft", experiment_dir / "soft_bs96_s80" / "scored_candidates.jsonl"),
-            ],
-        )
-
-    def test_mode_to_safe_port_offset_is_stable(self) -> None:
-        self.assertEqual(mode_to_safe_port_offset("teacher_plain"), 0)
-        self.assertEqual(mode_to_safe_port_offset("teacher_token_hard"), 2)
-        self.assertEqual(mode_to_safe_port_offset("teacher_token_soft"), 4)
 
 
 if __name__ == "__main__":

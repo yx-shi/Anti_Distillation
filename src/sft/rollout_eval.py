@@ -118,6 +118,8 @@ def _population_variance(values: list[float], mean_value: float) -> float:
 def grade_multi_rollout_predictions(
     samples: list[dict[str, Any]],
     generated_texts_by_sample: list[list[str]],
+    *,
+    allow_hash_answer_fallback: bool = False,
 ) -> tuple[dict[str, float], list[dict[str, Any]]]:
     """评估每题多次 rollout，并按独立样本方差传播得到整体 acc 方差。
 
@@ -150,7 +152,13 @@ def grade_multi_rollout_predictions(
         correctness_values: list[float] = []
         for rollout_id, generated_text in enumerate(generated_texts):
             completion = generated_text.strip()
-            predicted_answer = extract_final_ans(completion)
+            if allow_hash_answer_fallback:
+                predicted_answer = extract_final_ans(
+                    completion,
+                    allow_hash_fallback=True,
+                )
+            else:
+                predicted_answer = extract_final_ans(completion)
             is_correct = predicted_answer is not None and grade_answer(
                 predicted_answer,
                 sample["gold_answer"],

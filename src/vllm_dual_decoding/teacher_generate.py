@@ -44,9 +44,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--student-model-name-or-path", default=DEFAULT_STUDENT_MODEL)
     parser.add_argument("--dataset-name", default="agentica-org/DeepScaleR-Preview-Dataset")
     parser.add_argument("--dataset-config-name", default="default")
+    parser.add_argument("--dataset-key", default="")
     parser.add_argument("--split", default="train")
     parser.add_argument("--question-field", default="problem")
     parser.add_argument("--answer-field", default="answer")
+    parser.add_argument("--run-id", default="")
+    parser.add_argument("--answer-extraction-mode", default="boxed")
     parser.add_argument("--max-samples", type=int, default=24)
     parser.add_argument("--subset-seed", type=int, default=42)
     parser.add_argument("--num-shards", type=int, default=1)
@@ -214,6 +217,9 @@ def main() -> None:
         "seed": args.seed,
         "enable_thinking": False,
         "vllm_use_v1": os.environ.get("VLLM_USE_V1", ""),
+        "dataset_key": args.dataset_key,
+        "run_id": args.run_id,
+        "answer_extraction_mode": args.answer_extraction_mode,
     }
 
     output_path = Path(args.output_file)
@@ -294,6 +300,14 @@ def main() -> None:
                             "candidate_text": candidate.text.strip(),
                             "generation_mode": mode_label,
                             "adversarial_mode": adversarial_mode,
+                            "dataset_key": args.dataset_key,
+                            "dataset_name": args.dataset_name,
+                            "dataset_config_name": args.dataset_config_name,
+                            "split": args.split,
+                            "question_field": args.question_field,
+                            "answer_field": args.answer_field,
+                            "run_id": args.run_id,
+                            "answer_extraction_mode": args.answer_extraction_mode,
                             "dual_model_config": record_dual_model_config,
                             "worker_cls": worker_cls,
                             "generation_config": generation_config,

@@ -36,6 +36,7 @@ dependencies:
       - datasets==4.7.0
       - pyarrow==23.0.1
       - accelerate==1.12.0
+      - pyyaml==6.0.3
 
       # 本仓库当前本地 grading 逻辑会直接 import 这些包
       - sympy==1.13.1

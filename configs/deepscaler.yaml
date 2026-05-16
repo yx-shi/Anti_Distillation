@@ -1,0 +1,114 @@
+experiment_group: vllm_dual_smoke
+dataset: deepscaler
+modes:
+  - teacher_plain
+  - teacher_token_hard
+  - teacher_token_soft
+
+models:
+  teacher: /home/disk1/public_checkpoint/Qwen3-8B
+  student: /home/disk1/public_checkpoint/Qwen3-1.7B
+
+paths:
+  result_root: result/vllm_dual_decoding
+  run_root: /home/disk2/shiyixuan/Anti_Distillation/result/vllm_dual_decoding/runs
+
+execution:
+  conda_run: /home/shiyixuan/miniconda3/bin/conda run --no-capture-output -n adistill-unified
+  python_bin: python
+
+generation:
+  max_samples: 8000
+  subset_seed: 42
+  num_shards: 8
+  gpu_ids: "0 1 2 3 4 5 6 7"
+  num_candidates: 1
+  temperature: 0.7
+  top_p: 0.8
+  max_new_tokens: 4096
+  seed: 42
+  prompt_batch_size: 96
+  save_every_prompts: 96
+  tensor_parallel_size: 1
+  small_tensor_parallel_size: 1
+  dtype: bfloat16
+  max_model_len: 8192
+  max_num_seqs: 80
+  gpu_memory_utilization: 0.8
+  small_gpu_memory_utilization: 0.35
+  hard_candidate_top_k: 20
+  hard_candidate_top_p: 0.95
+  soft_student_weight: 1.0
+  soft_temperature: 1.0
+  debug_log_interval: 16
+  enforce_eager: false
+  trust_remote_code: true
+  allow_remote_model_files: false
+  use_tqdm: true
+
+scoring:
+  batch_size: 2
+  max_length: 8192
+  device: cuda:0
+  gpu_ids: "0"
+  attn_implementation: flash_attention_2
+  allow_remote_model_files: false
+
+training:
+  gpu_ids: "0,1,2,3,4,5,6,7"
+  nproc_per_node: 8
+  master_port: 29631
+  max_steps: 1600
+  eval_every: 200
+  checkpoint_every: 200
+  max_checkpoints_to_keep: 8
+  max_length: 5120
+  train_batch_size: 2
+  eval_batch_size: 2
+  learning_rate: 0.00005
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+  seed: 42
+  attn_implementation: flash_attention_2
+  allow_remote_model_files: false
+
+eval:
+  max_samples: 2048
+  holdout_max_samples: 1024
+  num_rollouts: 4
+  temperature: 0.7
+  top_p: 0.8
+  sampling_seed: 42
+  max_new_tokens: 4096
+  engine: vllm
+  gpu_ids: "0"
+  tensor_parallel_size: 1
+  max_model_len: 8192
+  max_num_seqs: 32
+  gpu_memory_utilization: 0.85
+  trust_remote_code: true
+  allow_remote_model_files: false
+
+mode_overrides:
+  teacher_plain:
+    generation:
+      prompt_batch_size: 128
+      save_every_prompts: 128
+      max_num_seqs: 128
+      gpu_memory_utilization: 0.85
+      hard_candidate_top_k:
+      soft_student_weight:
+  teacher_token_hard:
+    generation:
+      prompt_batch_size: 96
+      save_every_prompts: 96
+      max_num_seqs: 80
+      gpu_memory_utilization: 0.8
+      soft_student_weight:
+  teacher_token_soft:
+    generation:
+      prompt_batch_size: 96
+      save_every_prompts: 96
+      max_num_seqs: 80
+      gpu_memory_utilization: 0.8
+
