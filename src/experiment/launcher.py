@@ -14,7 +14,8 @@ from .config import (
     normalize_mode,
     normalize_stage,
 )
-from .paths import ExperimentPaths, paths_for_mode
+from .data_summary import build_data_summary, write_data_summary
+from .paths import ExperimentPaths, paths_for_mode, summary_dir_for_modes
 from src.vllm_dual_decoding.build_distill_dataset import (
     build_distill_records,
     summarize_distill_build,
@@ -190,6 +191,64 @@ class ExperimentLauncher:
         else:
             raise ValueError(f"Unsupported stage: {plan.stage}")
         return plan
+
+    def run_data_summary(
+        self,
+        modes: list[str],
+        *,
+        dry_run: bool = False,
+        allow_overwrite: bool = False,
+    ) -> Path:
+        normalized_modes = [normalize_mode(mode) for mode in modes]
+        output_dir = summary_dir_for_modes(self.config, normalized_modes)
+        json_file = output_dir / "data_quality_summary.json"
+        markdown_file = output_dir / "data_quality_summary.md"
+        scored_files = {
+            mode: paths_for_mode(self.config, mode).scored_file
+            for mode in normalized_modes
+        }
+        distill_summary_files = {
+            mode: paths_for_mode(self.config, mode).distill_summary_file
+            for mode in normalized_modes
+        }
+        group_run_id = self.config.group_run_id_for_modes(normalized_modes)
+        if dry_run:
+            print(
+                "experiment_stage_plan "
+                f"stage=data_summary modes={','.join(normalized_modes)} "
+                f"group_run_id={group_run_id} output_dir={output_dir}",
+                flush=True,
+            )
+            for mode in normalized_modes:
+                print(
+                    "dry_run_data_summary_input "
+                    f"mode={mode} scored_file={scored_files[mode]} "
+                    f"distill_summary_file={distill_summary_files[mode]}",
+                    flush=True,
+                )
+            return output_dir
+        guard_output_file(json_file, allow_overwrite=allow_overwrite)
+        guard_output_file(markdown_file, allow_overwrite=allow_overwrite)
+        for mode in normalized_modes:
+            if not scored_files[mode].is_file():
+                raise FileNotFoundError(f"Missing scored candidates for {mode}: {scored_files[mode]}")
+            if not distill_summary_files[mode].is_file():
+                raise FileNotFoundError(
+                    f"Missing distill summary for {mode}: {distill_summary_files[mode]}"
+                )
+        summary = build_data_summary(
+            group_run_id=group_run_id,
+            modes=normalized_modes,
+            scored_files=scored_files,
+            distill_summary_files=distill_summary_files,
+        )
+        write_data_summary(summary, output_dir)
+        print(
+            "data_summary_stage_done "
+            f"group_run_id={group_run_id} output_dir={output_dir} json_file={json_file}",
+            flush=True,
+        )
+        return output_dir
 
     def print_plan(self, plan: StagePlan) -> None:
         print(

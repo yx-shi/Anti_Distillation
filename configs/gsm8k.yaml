@@ -38,7 +38,7 @@ generation:
   small_gpu_memory_utilization: 0.35
   hard_candidate_top_k: 20
   hard_candidate_top_p: 0.95
-  soft_student_weight: 1.0
+  soft_student_weight: 0.6
   soft_temperature: 1.0
   debug_log_interval: 16
   enforce_eager: false
@@ -59,10 +59,10 @@ training:
   nproc_per_node: 8
   master_port: 29731
   max_steps: 875
-  eval_every: 200
-  checkpoint_every: 200
+  eval_every: 125
+  checkpoint_every: 125
   max_checkpoints_to_keep: 8
-  max_length: 5120
+  max_length: 8192
   train_batch_size: 2
   eval_batch_size: 2
   learning_rate: 0.00005
@@ -84,7 +84,7 @@ eval:
   gpu_ids: "0"
   tensor_parallel_size: 1
   max_model_len: 8192
-  max_num_seqs: 32
+  max_num_seqs: 160
   gpu_memory_utilization: 0.85
   trust_remote_code: true
   allow_remote_model_files: false
@@ -103,7 +103,7 @@ rollout_eval:
   include_final: true
   tensor_parallel_size: 1
   max_model_len: 8192
-  max_num_seqs: 32
+  max_num_seqs: 160
   gpu_memory_utilization: 0.85
   trust_remote_code: true
   allow_remote_model_files: false

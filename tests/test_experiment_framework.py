@@ -74,6 +74,38 @@ class RunIdTest(unittest.TestCase):
             "__t-0.7__p-0.8__n-128__seed-7",
         )
 
+    def test_group_run_id_omits_mode_specific_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "gsm8k.yaml"
+            config_path.write_text(
+                "\n".join(
+                    [
+                        "experiment_group: smoke",
+                        "dataset: gsm8k",
+                        "modes: [teacher_plain, teacher_token_soft]",
+                        "generation:",
+                        "  max_samples: 8",
+                        "  subset_seed: 123",
+                        "  temperature: 0.7",
+                        "  top_p: 0.8",
+                        "  hard_candidate_top_k: 20",
+                        "  soft_student_weight: 0.6",
+                        "mode_overrides:",
+                        "  teacher_plain:",
+                        "    generation:",
+                        "      hard_candidate_top_k:",
+                        "      soft_student_weight:",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            config = load_experiment_config(config_path)
+
+        self.assertEqual(
+            config.group_run_id_for_modes(),
+            "smoke__ds-gsm8k__t-0.7__p-0.8__n-8__seed-123",
+        )
+
 
 class ExperimentConfigTest(unittest.TestCase):
     def test_yaml_config_merges_dataset_defaults_and_mode_overrides(self) -> None:

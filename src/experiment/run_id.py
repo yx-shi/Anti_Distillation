@@ -40,3 +40,21 @@ def build_run_id(
         f"__seed-{_safe(subset_seed)}"
     )
 
+
+def build_group_run_id(
+    *,
+    experiment_group: str,
+    dataset: str,
+    temperature: Any,
+    top_p: Any,
+    max_samples: Any,
+    subset_seed: Any,
+) -> str:
+    return (
+        f"{_safe(experiment_group)}"
+        f"__ds-{_safe(dataset)}"
+        f"__t-{_safe(temperature)}"
+        f"__p-{_safe(top_p)}"
+        f"__n-{_safe(max_samples)}"
+        f"__seed-{_safe(subset_seed)}"
+    )

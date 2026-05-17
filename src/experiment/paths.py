@@ -52,3 +52,8 @@ def paths_for_mode(config: ExperimentConfig, mode: str) -> ExperimentPaths:
         rollout_eval_summary_file=analysis_dir / "checkpoint_eval.json",
         final_eval_file=analysis_dir / "final_eval.json",
     )
+
+
+def summary_dir_for_modes(config: ExperimentConfig, modes: list[str] | None = None) -> Path:
+    summary_root = Path(config.paths.get("summary_root", "result/summary"))
+    return summary_root / config.group_run_id_for_modes(modes)

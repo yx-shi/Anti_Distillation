@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .dataset_registry import DatasetSpec, get_dataset_spec
-from .run_id import build_run_id
+from .run_id import build_group_run_id, build_run_id
 
 
 MODE_ALIASES = {
@@ -27,6 +27,9 @@ STAGE_ALIASES = {
     "student_score": "student_score",
     "students_score": "student_score",
     "build_distill": "build_distill",
+    "data_summary": "data_summary",
+    "summarize_data": "data_summary",
+    "analyze_data": "data_summary",
     "train": "train",
     "eval": "eval",
     "rollout_eval": "rollout_eval",
@@ -237,6 +240,24 @@ class ExperimentConfig:
             top_p=generation.get("top_p"),
             max_samples=generation.get("max_samples"),
             subset_seed=generation.get("subset_seed"),
+        )
+
+    def group_run_id_for_modes(self, modes: list[str] | None = None) -> str:
+        normalized_modes = [normalize_mode(mode) for mode in (modes or self.modes)]
+        generations = [self.mode_config(mode)["generation"] for mode in normalized_modes]
+
+        def common_value(key: str) -> Any:
+            values = [generation.get(key) for generation in generations]
+            first = values[0]
+            return first if all(value == first for value in values) else "mixed"
+
+        return build_group_run_id(
+            experiment_group=self.experiment_group,
+            dataset=self.dataset.key,
+            temperature=common_value("temperature"),
+            top_p=common_value("top_p"),
+            max_samples=common_value("max_samples"),
+            subset_seed=common_value("subset_seed"),
         )
 
     def modes_for_cli(self, mode: str | None) -> list[str]:
