@@ -22,6 +22,7 @@ class ExperimentPaths:
     analysis_dir: Path
     log_dir: Path
     curve_dir: Path
+    rollout_eval_summary_file: Path
     final_eval_file: Path
 
 
@@ -48,5 +49,6 @@ def paths_for_mode(config: ExperimentConfig, mode: str) -> ExperimentPaths:
         analysis_dir=analysis_dir,
         log_dir=analysis_dir / "logs",
         curve_dir=analysis_dir / "curves",
+        rollout_eval_summary_file=analysis_dir / "checkpoint_eval.json",
         final_eval_file=analysis_dir / "final_eval.json",
     )

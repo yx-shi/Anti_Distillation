@@ -39,7 +39,8 @@ DeepScaleR 字段：
 `src/sft/rollout_eval.py` 只保留离线 rollout grading 共享函数：构造 Qwen3
 rollout prompt、准备 eval samples、聚合多 rollout correctness。训练主循环不再
 内嵌 greedy rollout / eval preview；checkpoint 与 final rollout eval 由
-`src/pre_exp/final_eval.py` 离线消费 checkpoint。
+`src/evaluation/rollout_eval.py` 离线消费 checkpoint；`src/pre_exp/final_eval.py`
+保留为兼容 wrapper，供旧预实验脚本继续调用。
 
 当前离线 rollout eval 对每道题采样 4 次，默认使用 `temperature=0.7`、`top_p=0.8`。每题先把 4 个 correctness 结果计算成：
 
@@ -82,7 +83,7 @@ conda run --no-capture-output -n adistill-unified python src/run_experiment.py \
   --dry-run
 ```
 
-`--stage` 支持 `teacher_generate`、`student_score`/`students_score`、`build_distill`、`train`、`eval`、`plot`/`curves`。`train`、`eval` 和 `plot` 不会默认运行，必须显式指定 stage。`plot` 阶段复用 `src/pre_exp/plot_curves.py`，把当前 run_id 的 `train.log`、`final_metrics.json` 和 `final_eval.json` 汇总到 `result/vllm_dual_decoding/analysis/{run_id}/curves/`。
+`--stage` 支持 `teacher_generate`、`student_score`/`students_score`、`build_distill`、`train`、`rollout_eval`/`checkpoint_eval`、`eval`、`plot`/`curves`。`train`、`rollout_eval`、`eval` 和 `plot` 不会默认运行，必须显式指定 stage。`rollout_eval` 使用 `rollout_eval.max_samples` 对 base Student step 0、`checkpoint-step-*` 和 `final_checkpoint` 做小样本 rollout，输出 `checkpoint_eval_*.json` 和 `checkpoint_eval.json` 汇总；`eval` 只做最终 checkpoint 的大样本 `final_eval.json`。`plot` 阶段复用 `src/pre_exp/plot_curves.py`，若存在 `checkpoint_eval_*.json` 则只用这些 checkpoint eval 文件画 rollout 曲线，否则 fallback 到 `final_eval.json`。
 
 建议模式名：
 

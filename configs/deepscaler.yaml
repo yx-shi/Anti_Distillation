@@ -1,4 +1,4 @@
-experiment_group: vllm_dual_smoke
+experiment_group: DeepScalarR-main
 dataset: deepscaler
 modes:
   - teacher_plain
@@ -89,6 +89,25 @@ eval:
   trust_remote_code: true
   allow_remote_model_files: false
 
+rollout_eval:
+  max_samples: 1024
+  num_rollouts: 4
+  temperature: 0.7
+  top_p: 0.8
+  sampling_seed: 42
+  max_new_tokens: 4096
+  engine: vllm
+  gpu_ids: "0 1 2 3 4 5 6 7"
+  checkpoint_glob: checkpoint-step-*
+  include_initial: true
+  include_final: true
+  tensor_parallel_size: 1
+  max_model_len: 8192
+  max_num_seqs: 32
+  gpu_memory_utilization: 0.85
+  trust_remote_code: true
+  allow_remote_model_files: false
+
 mode_overrides:
   teacher_plain:
     generation:
@@ -111,4 +130,3 @@ mode_overrides:
       save_every_prompts: 96
       max_num_seqs: 80
       gpu_memory_utilization: 0.8
-

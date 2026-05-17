@@ -58,6 +58,7 @@
 - 2026-05-16 已新增配置驱动 token-level 主入口：`src/run_experiment.py --config configs/deepscaler.yaml|configs/gsm8k.yaml --stage ...`。新链路通过 `src/experiment/dataset_registry.py` 管理 DeepScaleR/GSM8K 字段和答案抽取策略，统一使用 run_id 输出到 `result/vllm_dual_decoding/{candidates,datasets,analysis}/{run_id}`，训练 checkpoint 仍写入 `/home/disk2/shiyixuan/Anti_Distillation/result/vllm_dual_decoding/runs/{run_id}`。旧 `scripts/dual_decoding/*.sh` 已迁入 `scripts/archive/dual_decoding/`。
 - 2026-05-16 `src/vllm_dual_decoding/` 下旧专项脚本 `analyze_generation_modes.py`、`case_study.py`、`run_full_pipeline.py`、`run_parallel_rollout_eval.py` 已删除；新主链路只保留生成、打分、distill 构建和共享 helper。
 - 2026-05-17 token-level 主入口已接入 `plot`/`curves` stage，复用 `src/pre_exp/plot_curves.py` 汇总 run_id 对应的 train/eval/final rollout 曲线。`smoke_gpu` 下 GSM8K 与 DeepScaleR 的 `teacher_plain` 8-sample eval 已用新入口复验，并在 `result/vllm_dual_decoding/analysis/{run_id}/curves/` 产出 `curve_data.json`、`train_loss_curve.svg`、`val_loss_ppl_curve.svg` 和 `rollout_accuracy_curve.svg`。
+- 2026-05-17 token-level 主入口新增 `rollout_eval`/`checkpoint_eval` stage：按 `rollout_eval.gpu_ids` 并行评测 base Student step 0、训练中间 checkpoint 和 final checkpoint，输出 `checkpoint_eval_*.json` 与 `checkpoint_eval.json`。通用离线 rollout 入口迁到 `src/evaluation/rollout_eval.py`，`src/pre_exp/final_eval.py` 保留兼容 wrapper。已用 GSM8K teacher_plain 2-sample smoke 跑通 base/final 两个 checkpoint，并确认 curves 阶段优先使用 checkpoint eval 文件而不是大样本 `final_eval.json`。
 
 ## Maintenance Rule
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import shlex
 import subprocess
 from dataclasses import dataclass, field
@@ -97,6 +98,36 @@ def _base_env(extra: dict[str, str] | None = None) -> dict[str, str]:
     return env
 
 
+def _checkpoint_label(path: Path) -> str:
+    name = path.name
+    if name.startswith("checkpoint-step-"):
+        return name.removeprefix("checkpoint-step-")
+    return name
+
+
+def _safe_path_component(value: str) -> str:
+    cleaned = "".join(char if char.isalnum() or char in "._-" else "_" for char in value.strip())
+    return cleaned.strip("._-") or "checkpoint"
+
+
+def _command_output_file(command: CommandSpec) -> Path:
+    if "--output-file" not in command.argv:
+        raise ValueError(f"Command has no --output-file: {printable_command(command.argv)}")
+    return Path(command.argv[command.argv.index("--output-file") + 1])
+
+
+def _records_file_for_output(output_file: Path) -> Path:
+    return output_file.with_name(output_file.stem + ".records.jsonl")
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    with path.open("r", encoding="utf-8") as f:
+        payload = json.load(f)
+    if not isinstance(payload, dict):
+        raise ValueError(f"Expected object JSON in {path}.")
+    return payload
+
+
 class ExperimentLauncher:
     def __init__(self, config: ExperimentConfig):
         self.config = config
@@ -114,6 +145,8 @@ class ExperimentLauncher:
             return self._train_plan(normalized_mode)
         if normalized_stage == "eval":
             return self._eval_plan(normalized_mode)
+        if normalized_stage == "rollout_eval":
+            return self._rollout_eval_plan(normalized_mode)
         if normalized_stage == "plot":
             return self._plot_plan(normalized_mode)
         raise ValueError(f"Unsupported stage: {stage}")
@@ -141,6 +174,8 @@ class ExperimentLauncher:
             self._run_single_command_stage(plan, allow_overwrite=True, outputs=[])
         elif plan.stage == "eval":
             self._run_single_command_stage(plan, allow_overwrite=allow_overwrite, outputs=[plan.paths.final_eval_file])
+        elif plan.stage == "rollout_eval":
+            self._run_rollout_eval(plan, allow_overwrite=allow_overwrite)
         elif plan.stage == "plot":
             self._run_single_command_stage(
                 plan,
@@ -164,6 +199,7 @@ class ExperimentLauncher:
             f"scored_file={plan.paths.scored_file} "
             f"distill_file={plan.paths.distill_file} "
             f"run_dir={plan.paths.run_dir} "
+            f"rollout_eval_summary_file={plan.paths.rollout_eval_summary_file} "
             f"analysis_dir={plan.paths.analysis_dir} "
             f"curve_dir={plan.paths.curve_dir}",
             flush=True,
@@ -434,7 +470,7 @@ class ExperimentLauncher:
         gpu_id = parse_gpu_ids(eval_cfg["gpu_ids"])[0]
         argv = [
             *self._command_base(),
-            "src/pre_exp/final_eval.py",
+            "src/evaluation/rollout_eval.py",
             "--engine",
             str(eval_cfg["engine"]),
             "--model-name-or-path",
@@ -489,8 +525,105 @@ class ExperimentLauncher:
             [CommandSpec(argv=argv, env=_base_env({"CUDA_VISIBLE_DEVICES": gpu_id}), log_file=paths.log_dir / "final_eval.log")],
         )
 
+    def _rollout_eval_plan(self, mode: str) -> StagePlan:
+        mode_cfg = self.config.mode_config(mode)
+        eval_cfg = mode_cfg["rollout_eval"]
+        generation = mode_cfg["generation"]
+        paths = paths_for_mode(self.config, mode)
+        exclude_max_samples = generation["max_samples"] if self.config.dataset.eval_exclude_train_subset else 0
+        gpu_ids = parse_gpu_ids(eval_cfg["gpu_ids"])
+
+        checkpoint_specs: list[tuple[str, Path, int | None]] = []
+        if bool(eval_cfg.get("include_initial", True)):
+            checkpoint_specs.append(("000000", Path(str(mode_cfg["models"]["student"])), 0))
+
+        checkpoint_glob = str(eval_cfg.get("checkpoint_glob", "checkpoint-step-*"))
+        for checkpoint_dir in sorted(paths.run_dir.glob(checkpoint_glob)):
+            if checkpoint_dir.is_dir():
+                checkpoint_specs.append((_checkpoint_label(checkpoint_dir), checkpoint_dir, None))
+
+        final_checkpoint = paths.run_dir / "final_checkpoint"
+        if bool(eval_cfg.get("include_final", True)) and final_checkpoint.is_dir():
+            checkpoint_specs.append((_checkpoint_label(final_checkpoint), final_checkpoint, None))
+
+        if not checkpoint_specs:
+            raise FileNotFoundError(
+                f"No checkpoints found for rollout_eval under {paths.run_dir}. "
+                "Enable rollout_eval.include_initial or run training first."
+            )
+
+        commands: list[CommandSpec] = []
+        for index, (label, checkpoint_path, step_override) in enumerate(checkpoint_specs):
+            output_file = paths.analysis_dir / f"checkpoint_eval_{_safe_path_component(label)}.json"
+            argv = [
+                *self._command_base(),
+                "src/evaluation/rollout_eval.py",
+                "--engine",
+                str(eval_cfg["engine"]),
+                "--model-name-or-path",
+                str(checkpoint_path),
+                "--dataset-name",
+                self.config.dataset.dataset_name,
+                "--dataset-config-name",
+                self.config.dataset.dataset_config_name,
+                "--split",
+                self.config.dataset.eval_split,
+                "--question-field",
+                self.config.dataset.question_field,
+                "--answer-field",
+                self.config.dataset.answer_field,
+                "--exclude-subset-max-samples",
+                str(exclude_max_samples),
+                "--exclude-subset-seed",
+                str(generation["subset_seed"]),
+                "--subset-seed",
+                str(generation["subset_seed"]),
+                "--max-samples",
+                str(eval_cfg["max_samples"]),
+                "--max-new-tokens",
+                str(eval_cfg["max_new_tokens"]),
+                "--num-rollouts",
+                str(eval_cfg["num_rollouts"]),
+                "--temperature",
+                str(eval_cfg["temperature"]),
+                "--top-p",
+                str(eval_cfg["top_p"]),
+                "--sampling-seed",
+                str(eval_cfg["sampling_seed"]),
+                "--tensor-parallel-size",
+                str(eval_cfg["tensor_parallel_size"]),
+                "--max-model-len",
+                str(eval_cfg["max_model_len"]),
+                "--max-num-seqs",
+                str(eval_cfg["max_num_seqs"]),
+                "--gpu-memory-utilization",
+                str(eval_cfg["gpu_memory_utilization"]),
+                "--output-file",
+                str(output_file),
+            ]
+            if step_override is not None:
+                argv.extend(["--checkpoint-label-override", label])
+                argv.extend(["--checkpoint-step-override", str(step_override)])
+            _append_bool_flag(argv, "--trust-remote-code", bool(eval_cfg.get("trust_remote_code")))
+            _append_bool_flag(argv, "--allow-remote-model-files", bool(eval_cfg.get("allow_remote_model_files")))
+            _append_bool_flag(argv, "--allow-hash-answer-fallback", self.config.allows_hash_answer_fallback())
+            commands.append(
+                CommandSpec(
+                    argv=argv,
+                    env=_base_env({"CUDA_VISIBLE_DEVICES": gpu_ids[index % len(gpu_ids)]}),
+                    log_file=paths.log_dir / f"checkpoint_eval_{_safe_path_component(label)}.log",
+                )
+            )
+        return StagePlan("rollout_eval", mode, paths.run_id, paths, commands)
+
     def _plot_plan(self, mode: str) -> StagePlan:
         paths = paths_for_mode(self.config, mode)
+        checkpoint_eval_files = sorted(
+            path
+            for path in paths.analysis_dir.glob("checkpoint_eval_*.json")
+            if path.name != paths.rollout_eval_summary_file.name
+        )
+        analysis_files = checkpoint_eval_files if checkpoint_eval_files else [paths.final_eval_file]
         argv = [
             *self._command_base(),
             "src/pre_exp/plot_curves.py",
@@ -504,9 +637,11 @@ class ExperimentLauncher:
             mode,
             "--mode-dir",
             f"{mode}={paths.run_dir}",
-            "--analysis-file",
-            f"{mode}={paths.final_eval_file}",
         ]
+        for analysis_file in analysis_files:
+            argv.extend(["--analysis-file", f"{mode}={analysis_file}"])
+        if checkpoint_eval_files:
+            argv.append("--explicit-analysis-files-only")
         return StagePlan(
             "plot",
             mode,
@@ -594,6 +729,103 @@ class ExperimentLauncher:
             f.flush()
             subprocess.run(command.argv, check=True, env=env, stdout=f, stderr=subprocess.STDOUT)
         print(f"{plan.stage}_stage_done run_id={plan.run_id}", flush=True)
+
+    def _run_rollout_eval(self, plan: StagePlan, *, allow_overwrite: bool) -> None:
+        if not plan.commands:
+            raise RuntimeError("rollout_eval plan has no commands.")
+        guard_output_file(plan.paths.rollout_eval_summary_file, allow_overwrite=allow_overwrite)
+        output_files = [_command_output_file(command) for command in plan.commands]
+        for output_file in output_files:
+            guard_output_file(output_file, allow_overwrite=allow_overwrite)
+            guard_output_file(_records_file_for_output(output_file), allow_overwrite=allow_overwrite)
+        for command in plan.commands:
+            if command.log_file is not None:
+                guard_output_file(command.log_file, allow_overwrite=allow_overwrite)
+
+        max_parallel = len({command.env.get("CUDA_VISIBLE_DEVICES", "") for command in plan.commands})
+        max_parallel = max(max_parallel, 1)
+        for start in range(0, len(plan.commands), max_parallel):
+            self._run_command_batch(plan.commands[start:start + max_parallel])
+
+        self._write_rollout_eval_summary(plan.paths.rollout_eval_summary_file, output_files)
+        print(
+            "rollout_eval_stage_done "
+            f"run_id={plan.run_id} checkpoints={len(output_files)} "
+            f"summary_file={plan.paths.rollout_eval_summary_file}",
+            flush=True,
+        )
+
+    def _run_command_batch(self, commands: list[CommandSpec]) -> None:
+        processes: list[tuple[CommandSpec, subprocess.Popen[Any], Any]] = []
+        for command in commands:
+            env = os.environ.copy()
+            env.update(command.env)
+            if command.log_file is None:
+                process = subprocess.Popen(command.argv, env=env)
+                processes.append((command, process, None))
+                continue
+            command.log_file.parent.mkdir(parents=True, exist_ok=True)
+            log_handle = command.log_file.open("w", encoding="utf-8")
+            log_handle.write(f"command={printable_command(command.argv)}\n\n")
+            log_handle.flush()
+            process = subprocess.Popen(
+                command.argv,
+                env=env,
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
+            )
+            processes.append((command, process, log_handle))
+
+        failed: list[str] = []
+        for command, process, log_handle in processes:
+            try:
+                return_code = process.wait()
+                if return_code != 0:
+                    failed.append(f"{command.log_file or printable_command(command.argv)}:exit={return_code}")
+            finally:
+                if log_handle is not None:
+                    log_handle.close()
+        if failed:
+            raise SystemExit("At least one rollout_eval command failed: " + ", ".join(failed))
+
+    def _write_rollout_eval_summary(self, summary_file: Path, output_files: list[Path]) -> None:
+        checkpoints: list[dict[str, Any]] = []
+        shared: dict[str, Any] = {}
+        for output_file in output_files:
+            payload = _read_json(output_file)
+            if not shared:
+                for key in (
+                    "engine",
+                    "dataset_name",
+                    "dataset_config_name",
+                    "split",
+                    "question_field",
+                    "answer_field",
+                    "max_new_tokens",
+                    "num_rollouts",
+                    "temperature",
+                    "top_p",
+                    "sampling_seed",
+                    "max_samples",
+                    "subset_seed",
+                    "exclude_subset_max_samples",
+                    "exclude_subset_seed",
+                    "eligible_sample_count",
+                    "allow_hash_answer_fallback",
+                ):
+                    if key in payload:
+                        shared[key] = payload[key]
+            checkpoints.append(
+                {
+                    "checkpoint_label": payload.get("checkpoint_label"),
+                    "checkpoint_step": payload.get("checkpoint_step"),
+                    "model_name_or_path": payload.get("model_name_or_path"),
+                    "output_file": str(output_file),
+                    "records_file": str(_records_file_for_output(output_file)),
+                    "metrics": payload.get("metrics", {}),
+                }
+            )
+        write_json(summary_file, {**shared, "checkpoints": checkpoints})
 
     def _run_build_distill(self, plan: StagePlan, *, allow_overwrite: bool) -> None:
         guard_output_file(plan.paths.distill_file, allow_overwrite=allow_overwrite)

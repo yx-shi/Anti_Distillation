@@ -1,4 +1,4 @@
-experiment_group: vllm_dual_smoke
+experiment_group: Gsm8k-main
 dataset: gsm8k
 modes:
   - teacher_plain
@@ -18,14 +18,14 @@ execution:
   python_bin: python
 
 generation:
-  max_samples: 8000
+  max_samples: 7000
   subset_seed: 42
   num_shards: 8
   gpu_ids: "0 1 2 3 4 5 6 7"
   num_candidates: 1
   temperature: 0.7
   top_p: 0.8
-  max_new_tokens: 4096
+  max_new_tokens: 1024
   seed: 42
   prompt_batch_size: 96
   save_every_prompts: 96
@@ -33,7 +33,7 @@ generation:
   small_tensor_parallel_size: 1
   dtype: bfloat16
   max_model_len: 8192
-  max_num_seqs: 80
+  max_num_seqs: 96
   gpu_memory_utilization: 0.8
   small_gpu_memory_utilization: 0.35
   hard_candidate_top_k: 20
@@ -58,7 +58,7 @@ training:
   gpu_ids: "0,1,2,3,4,5,6,7"
   nproc_per_node: 8
   master_port: 29731
-  max_steps: 1600
+  max_steps: 875
   eval_every: 200
   checkpoint_every: 200
   max_checkpoints_to_keep: 8
@@ -79,9 +79,28 @@ eval:
   temperature: 0.7
   top_p: 0.8
   sampling_seed: 42
-  max_new_tokens: 4096
+  max_new_tokens: 1024
   engine: vllm
   gpu_ids: "0"
+  tensor_parallel_size: 1
+  max_model_len: 8192
+  max_num_seqs: 32
+  gpu_memory_utilization: 0.85
+  trust_remote_code: true
+  allow_remote_model_files: false
+
+rollout_eval:
+  max_samples: 1024
+  num_rollouts: 4
+  temperature: 0.7
+  top_p: 0.8
+  sampling_seed: 42
+  max_new_tokens: 1024
+  engine: vllm
+  gpu_ids: "0 1 2 3 4 5 6 7"
+  checkpoint_glob: checkpoint-step-*
+  include_initial: true
+  include_final: true
   tensor_parallel_size: 1
   max_model_len: 8192
   max_num_seqs: 32

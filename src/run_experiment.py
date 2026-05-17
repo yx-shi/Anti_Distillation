@@ -25,7 +25,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         choices=sorted(STAGE_ALIASES),
         help=(
             "Stage to run: teacher_generate, student_score/students_score, "
-            "build_distill, train, eval, plot/curves."
+            "build_distill, train, rollout_eval/checkpoint_eval, eval, plot/curves."
         ),
     )
     parser.add_argument("--mode", default="", help="Optional mode; defaults to all modes in the YAML.")

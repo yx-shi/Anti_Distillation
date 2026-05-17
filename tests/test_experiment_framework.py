@@ -223,6 +223,111 @@ class LauncherDryRunPlanTest(unittest.TestCase):
             command.argv,
         )
 
+    def test_rollout_eval_plan_includes_initial_intermediate_final_and_parallel_gpus(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config_path = root / "gsm8k.yaml"
+            config_path.write_text(
+                "\n".join(
+                    [
+                        "experiment_group: smoke",
+                        "dataset: gsm8k",
+                        "modes: [teacher_plain]",
+                        "models:",
+                        "  student: /models/base-student",
+                        "paths:",
+                        f"  result_root: {root / 'results'}",
+                        f"  run_root: {root / 'runs'}",
+                        "generation:",
+                        "  max_samples: 8",
+                        "  subset_seed: 123",
+                        "  temperature: 0.7",
+                        "  top_p: 0.8",
+                        "  hard_candidate_top_k:",
+                        "  soft_student_weight:",
+                        "rollout_eval:",
+                        "  max_samples: 5",
+                        "  checkpoint_glob: checkpoint-step-*",
+                        "  include_initial: true",
+                        "  include_final: true",
+                        "  gpu_ids: '0 1'",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            config = load_experiment_config(config_path)
+            run_id = config.run_id_for_mode("teacher_plain")
+            run_dir = root / "runs" / run_id
+            (run_dir / "checkpoint-step-200").mkdir(parents=True)
+            (run_dir / "final_checkpoint").mkdir(parents=True)
+
+            launcher = ExperimentLauncher(config)
+            plan = launcher.build_stage_plan("rollout_eval", "teacher_plain")
+
+        self.assertEqual(plan.stage, "rollout_eval")
+        self.assertEqual(plan.paths.rollout_eval_summary_file, root / "results" / "analysis" / run_id / "checkpoint_eval.json")
+        self.assertEqual(len(plan.commands), 3)
+        output_args = [command.argv[command.argv.index("--output-file") + 1] for command in plan.commands]
+        self.assertEqual(
+            output_args,
+            [
+                str(root / "results" / "analysis" / run_id / "checkpoint_eval_000000.json"),
+                str(root / "results" / "analysis" / run_id / "checkpoint_eval_200.json"),
+                str(root / "results" / "analysis" / run_id / "checkpoint_eval_final_checkpoint.json"),
+            ],
+        )
+        self.assertEqual([command.env["CUDA_VISIBLE_DEVICES"] for command in plan.commands], ["0", "1", "0"])
+        first = plan.commands[0]
+        self.assertIn("src/evaluation/rollout_eval.py", first.argv)
+        self.assertIn("--checkpoint-label-override", first.argv)
+        self.assertIn("000000", first.argv)
+        self.assertIn("--checkpoint-step-override", first.argv)
+        self.assertIn("0", first.argv)
+        self.assertIn("/models/base-student", first.argv)
+
+    def test_plot_plan_prefers_checkpoint_eval_files_over_final_eval(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config_path = root / "gsm8k.yaml"
+            config_path.write_text(
+                "\n".join(
+                    [
+                        "experiment_group: smoke",
+                        "dataset: gsm8k",
+                        "modes: [teacher_plain]",
+                        "paths:",
+                        f"  result_root: {root / 'results'}",
+                        f"  run_root: {root / 'runs'}",
+                        "generation:",
+                        "  max_samples: 8",
+                        "  subset_seed: 123",
+                        "  temperature: 0.7",
+                        "  top_p: 0.8",
+                        "  hard_candidate_top_k:",
+                        "  soft_student_weight:",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            config = load_experiment_config(config_path)
+            run_id = config.run_id_for_mode("teacher_plain")
+            analysis_dir = root / "results" / "analysis" / run_id
+            analysis_dir.mkdir(parents=True)
+            (analysis_dir / "checkpoint_eval_000000.json").write_text("{}", encoding="utf-8")
+            (analysis_dir / "checkpoint_eval_200.json").write_text("{}", encoding="utf-8")
+            (analysis_dir / "final_eval.json").write_text("{}", encoding="utf-8")
+
+            launcher = ExperimentLauncher(config)
+            plan = launcher.build_stage_plan("plot", "teacher_plain")
+            argv = plan.commands[0].argv
+
+        analysis_file_values = [
+            argv[index + 1] for index, item in enumerate(argv) if item == "--analysis-file"
+        ]
+        self.assertEqual(len(analysis_file_values), 2)
+        self.assertTrue(all("checkpoint_eval_" in value for value in analysis_file_values))
+        self.assertTrue(all("final_eval.json" not in value for value in analysis_file_values))
+
 
 if __name__ == "__main__":
     unittest.main()

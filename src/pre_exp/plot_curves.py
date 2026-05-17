@@ -51,6 +51,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "May be repeated; files are merged with --analysis-dir discovery."
         ),
     )
+    parser.add_argument(
+        "--explicit-analysis-files-only",
+        action="store_true",
+        help="Use only --analysis-file entries for rollout metrics and skip --analysis-dir discovery.",
+    )
     return parser
 
 
@@ -65,6 +70,20 @@ def parse_mode_path_mapping(values: list[str], *, option_name: str) -> dict[str,
         if not mode or not raw_path:
             raise ValueError(f"{option_name} entries must use non-empty MODE=PATH: {raw_value!r}")
         mapping[mode] = Path(raw_path)
+    return mapping
+
+
+def parse_mode_path_list_mapping(values: list[str], *, option_name: str) -> dict[str, list[Path]]:
+    mapping: dict[str, list[Path]] = {}
+    for raw_value in values:
+        if "=" not in raw_value:
+            raise ValueError(f"{option_name} entries must use MODE=PATH format: {raw_value!r}")
+        mode, raw_path = raw_value.split("=", 1)
+        mode = mode.strip()
+        raw_path = raw_path.strip()
+        if not mode or not raw_path:
+            raise ValueError(f"{option_name} entries must use non-empty MODE=PATH: {raw_value!r}")
+        mapping.setdefault(mode, []).append(Path(raw_path))
     return mapping
 
 
@@ -228,7 +247,8 @@ def load_rollout_metrics(
     analysis_dir: Path,
     modes: list[str],
     final_steps: dict[str, int | None],
-    analysis_files: dict[str, Path] | None = None,
+    analysis_files: dict[str, Path | list[Path]] | None = None,
+    discover_analysis_dir: bool = True,
 ) -> dict[str, list[dict[str, Any]]]:
     by_mode = {mode: [] for mode in modes}
     explicit_files = analysis_files or {}
@@ -263,10 +283,12 @@ def load_rollout_metrics(
             }
         )
 
-    for mode, json_path in sorted(explicit_files.items()):
-        add_rollout_metric(json_path, mode_hint=mode)
+    for mode, raw_paths in sorted(explicit_files.items()):
+        json_paths = raw_paths if isinstance(raw_paths, list) else [raw_paths]
+        for json_path in json_paths:
+            add_rollout_metric(json_path, mode_hint=mode)
 
-    if analysis_dir.is_dir():
+    if discover_analysis_dir and analysis_dir.is_dir():
         for json_path in sorted(analysis_dir.glob("*.json")):
             add_rollout_metric(json_path)
 
@@ -308,7 +330,8 @@ def collect_curve_data(
     analysis_dir: Path,
     modes: list[str],
     mode_dirs: dict[str, Path] | None = None,
-    analysis_files: dict[str, Path] | None = None,
+    analysis_files: dict[str, Path | list[Path]] | None = None,
+    discover_analysis_dir: bool = True,
 ) -> dict[str, Any]:
     mode_data: dict[str, Any] = {}
     final_steps: dict[str, int | None] = {}
@@ -339,6 +362,7 @@ def collect_curve_data(
         modes,
         final_steps,
         analysis_files=analysis_files,
+        discover_analysis_dir=discover_analysis_dir,
     )
     for mode in modes:
         mode_data[mode]["rollout_accuracy"] = rollout_metrics[mode]
@@ -662,7 +686,7 @@ def main() -> None:
     output_dir = Path(args.output_dir)
     modes = list(args.modes)
     mode_dirs = parse_mode_path_mapping(args.mode_dir, option_name="--mode-dir")
-    analysis_files = parse_mode_path_mapping(args.analysis_file, option_name="--analysis-file")
+    analysis_files = parse_mode_path_list_mapping(args.analysis_file, option_name="--analysis-file")
 
     curve_data = collect_curve_data(
         run_dir=run_dir,
@@ -670,6 +694,7 @@ def main() -> None:
         modes=modes,
         mode_dirs=mode_dirs,
         analysis_files=analysis_files,
+        discover_analysis_dir=not args.explicit_analysis_files_only,
     )
     outputs = write_outputs(curve_data=curve_data, output_dir=output_dir)
     for path in outputs:

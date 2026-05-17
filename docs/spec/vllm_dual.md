@@ -53,7 +53,7 @@ vLLM-dual 已在 vLLM 0.8.5 V0 路径中实现 hard/soft token-level adversarial
 - hard worker smoke 通过，日志包含 `SMOKE_DUAL_EFFECTIVE ... adv_mode=hard` 和 `ADISTILL_DUAL_ADVERSARIAL enabled mode=hard`。
 - soft worker smoke 通过，日志包含 `SMOKE_DUAL_EFFECTIVE ... adv_mode=soft` 和 `ADISTILL_DUAL_ADVERSARIAL enabled mode=soft`。
 - DeepScaleR 1 条、16 token micro data chain 通过：plain 走 `vllm.worker.worker.Worker`，hard/soft 走 `vllm.worker.dual_worker.DualModelWorker`，三种模式都产出 `candidate_pool.jsonl`、`scored_candidates.jsonl` 和 `data_quality_summary.json`。
-- token-level 配置驱动入口支持 DeepScaleR 和 GSM8K：`src/run_experiment.py --config configs/deepscaler.yaml --stage teacher_generate --mode teacher_plain --dry-run`。输出按 run_id 写入 `result/vllm_dual_decoding/{candidates,datasets,analysis}/{run_id}`，训练 checkpoint 写入 `/home/disk2/shiyixuan/Anti_Distillation/result/vllm_dual_decoding/runs/{run_id}`。`--stage plot`/`curves` 已接入 SVG 曲线汇总，产物写入 `analysis/{run_id}/curves/`。
+- token-level 配置驱动入口支持 DeepScaleR 和 GSM8K：`src/run_experiment.py --config configs/deepscaler.yaml --stage teacher_generate --mode teacher_plain --dry-run`。输出按 run_id 写入 `result/vllm_dual_decoding/{candidates,datasets,analysis}/{run_id}`，训练 checkpoint 写入 `/home/disk2/shiyixuan/Anti_Distillation/result/vllm_dual_decoding/runs/{run_id}`。`--stage rollout_eval`/`checkpoint_eval` 已接入 base Student、`checkpoint-step-*`、`final_checkpoint` 的小样本 rollout，并可按 `rollout_eval.gpu_ids` 并行跑多个 checkpoint；`--stage plot`/`curves` 已接入 SVG 曲线汇总，产物写入 `analysis/{run_id}/curves/`。
 - 2026-05-14 已新增 token-level full pipeline 入口：`src/vllm_dual_decoding/build_distill_dataset.py` 将每个 generation mode 的 `scored_candidates.jsonl` 转成 SFT-ready `distill_*.jsonl`。DeepScaleR 8000 条三组数据已完成 distill JSONL 与 1024 条 holdout eval JSONL 构建；尚未启动长训练或 GPU rollout eval。2026-05-16 后 stage 编排改由 `src/run_experiment.py` 负责。
 
 ## 1. 目录职责
@@ -82,7 +82,7 @@ import vllm
 
 `vllm_dual/test_dual_worker.py` 比较特殊：测试文件就在 `vllm_dual/` 目录下。如果直接运行它，Python 默认会把 `vllm_dual/` 放到搜索路径最前面。测试脚本里已经显式移除了这个路径，确保测试的是同步后的 conda 版 vLLM。
 
-token-level full pipeline 训练/eval 阶段沿用 conda 环境中的 vLLM 和 `src/train_sft.py` / `src/pre_exp/final_eval.py`，不需要把 `vllm_dual/` 加入 `PYTHONPATH`。
+token-level full pipeline 训练/eval 阶段沿用 conda 环境中的 vLLM 和 `src/train_sft.py` / `src/evaluation/rollout_eval.py`，不需要把 `vllm_dual/` 加入 `PYTHONPATH`。`src/pre_exp/final_eval.py` 仅作为旧预实验兼容 wrapper 保留。
 
 ## 3. 常规开发循环
 
