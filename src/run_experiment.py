@@ -16,7 +16,7 @@ from src.experiment.config import STAGE_ALIASES, load_experiment_config, normali
 from src.experiment.launcher import ExperimentLauncher
 
 
-GROUP_STAGES = {"data_summary"}
+GROUP_STAGES = {"data_summary", "final_summary"}
 
 
 def parse_stage_list(raw_stage: str) -> list[str]:
@@ -41,7 +41,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
         metavar="STAGE[,STAGE...]",
         help=(
             "Stage(s) to run: teacher_generate, student_score/students_score, "
-            "build_distill, train, rollout_eval/checkpoint_eval, eval, plot/curves. "
+            "build_distill, train, rollout_eval/checkpoint_eval, eval, plot/curves, "
+            "data_summary, final_summary/result_summary. "
             f"Known aliases: {', '.join(sorted(STAGE_ALIASES))}."
         ),
     )
@@ -60,11 +61,20 @@ def main() -> None:
 
     for stage in stages:
         if stage in GROUP_STAGES:
-            launcher.run_data_summary(
-                modes,
-                dry_run=args.dry_run,
-                allow_overwrite=args.allow_overwrite,
-            )
+            if stage == "data_summary":
+                launcher.run_data_summary(
+                    modes,
+                    dry_run=args.dry_run,
+                    allow_overwrite=args.allow_overwrite,
+                )
+            elif stage == "final_summary":
+                launcher.run_final_summary(
+                    modes,
+                    dry_run=args.dry_run,
+                    allow_overwrite=args.allow_overwrite,
+                )
+            else:
+                raise ValueError(f"Unsupported group stage: {stage}")
         else:
             for mode in modes:
                 launcher.run_stage(

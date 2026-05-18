@@ -15,6 +15,7 @@ from .config import (
     normalize_stage,
 )
 from .data_summary import build_data_summary, write_data_summary
+from .final_summary import build_final_result_summary, write_final_result_summary
 from .paths import ExperimentPaths, paths_for_mode, summary_dir_for_modes
 from src.vllm_dual_decoding.build_distill_dataset import (
     build_distill_records,
@@ -246,6 +247,61 @@ class ExperimentLauncher:
         print(
             "data_summary_stage_done "
             f"group_run_id={group_run_id} output_dir={output_dir} json_file={json_file}",
+            flush=True,
+        )
+        return output_dir
+
+    def run_final_summary(
+        self,
+        modes: list[str],
+        *,
+        dry_run: bool = False,
+        allow_overwrite: bool = False,
+    ) -> Path:
+        normalized_modes = [normalize_mode(mode) for mode in modes]
+        output_dir = summary_dir_for_modes(self.config, normalized_modes)
+        group_run_id = self.config.group_run_id_for_modes(normalized_modes)
+        output_files = [
+            output_dir / "final_result_summary.json",
+            output_dir / "final_result_summary.md",
+            output_dir / "curve_data.json",
+            output_dir / "train_loss_curve.svg",
+            output_dir / "val_loss_ppl_curve.svg",
+            output_dir / "rollout_accuracy_curve.svg",
+        ]
+        if dry_run:
+            print(
+                "experiment_stage_plan "
+                f"stage=final_summary modes={','.join(normalized_modes)} "
+                f"group_run_id={group_run_id} output_dir={output_dir}",
+                flush=True,
+            )
+            for mode in normalized_modes:
+                paths = paths_for_mode(self.config, mode)
+                print(
+                    "dry_run_final_summary_input "
+                    f"mode={mode} run_dir={paths.run_dir} analysis_dir={paths.analysis_dir} "
+                    f"final_eval_file={paths.final_eval_file} "
+                    f"checkpoint_eval_summary_file={paths.rollout_eval_summary_file}",
+                    flush=True,
+                )
+            return output_dir
+        for output_file in output_files:
+            guard_output_file(output_file, allow_overwrite=allow_overwrite)
+        for mode in normalized_modes:
+            paths = paths_for_mode(self.config, mode)
+            if not paths.run_dir.is_dir():
+                raise FileNotFoundError(f"Missing training run directory for {mode}: {paths.run_dir}")
+            if not paths.analysis_dir.is_dir():
+                raise FileNotFoundError(f"Missing analysis directory for {mode}: {paths.analysis_dir}")
+            if not paths.final_eval_file.is_file():
+                raise FileNotFoundError(f"Missing final eval file for {mode}: {paths.final_eval_file}")
+        summary, curve_data = build_final_result_summary(config=self.config, modes=normalized_modes)
+        outputs = write_final_result_summary(summary, curve_data, output_dir)
+        print(
+            "final_summary_stage_done "
+            f"group_run_id={group_run_id} output_dir={output_dir} "
+            f"json_file={outputs['json_file']}",
             flush=True,
         )
         return output_dir
